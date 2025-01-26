@@ -7,21 +7,29 @@ A collection of modules for [VRCOSC](https://github.com/VolcanicArts/VRCOSC).
 ### OSCLeash
 A module for controlling leash physics in VRChat using OSC parameters. For more information, see the [OSCLeash README](CrookedToesModules/OSCLeash/README.md).
 
+### OSCAudioReaction
+Captures your system's audio output and sends stereo direction and volume information to VRChat parameters for audio visualization. Based on [VRC-OSC-Audio-Reaction](https://github.com/Codel1417/VRC-OSC-Audio-Reaction) by Codel1417.
+
 ## Installation
 
 1. Download the latest release from the releases page
-2. Extract the DLL files to your VRCOSC packages folder (`%appdata%/VRCOSC/packages/local/`)
-3. Restart VRCOSC if it's running
+2. Place the module DLLs in your VRCOSC modules folder (typically `%AppData%/VRCOSC/Packages/local`)
+3. Enable the desired modules in VRCOSC
+4. Configure each module's settings as needed
 
 ## Development
 
-This repository uses .NET 8.0 and targets Windows 10.0.22621.0. To build the modules:
+These modules are developed for VRCOSC using C# and .NET 8.0. Each module is contained in its own directory under `Modules/` with its own README detailing specific functionality and setup.
 
-1. Clone the repository
-2. Open the solution in Visual Studio or your preferred IDE
-3. Build the solution
-4. The built DLLs will be automatically copied to your VRCOSC packages folder
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Credits
+
+- [VRCOSC](https://github.com/VolcanicArts/VRCOSC) by VolcanicArts
+- [VRC-OSC-Audio-Reaction](https://github.com/Codel1417/VRC-OSC-Audio-Reaction) by Codel1417

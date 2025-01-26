@@ -22,12 +22,12 @@ public class OSCAudioDirectionModule : Module
     private float[]? audioBuffer;
     private readonly object bufferLock = new();
     private bool isRunning;
-    private float audioLevel;
-    private float audioPeak;
+    private float currentVolume;    // Renamed from audioLevel for clarity
+    private float currentDirection; // Renamed from audioPeak for clarity
     private int bytesPerSample;
     private float leftRaw;
     private float rightRaw;
-    private bool shouldUpdate = true;
+    private volatile bool shouldUpdate = true;  // Added volatile for thread safety
     private const float TARGET_LEVEL = 0.5f;  // Target average volume level
     private const float AGC_SPEED = 0.1f;     // How fast AGC adjusts (0-1)
     private float currentGain = 1.0f;         // Current automatic gain value
@@ -37,6 +37,7 @@ public class OSCAudioDirectionModule : Module
     private const int MAX_ERRORS = 3;
     private DateTime lastErrorTime = DateTime.MinValue;
     private const int ERROR_RESET_MS = 5000;
+    private readonly object recoveryLock = new();  // Added lock for recovery synchronization
     
     // Smoothing
     private float smoothedVolume = 0f;
@@ -86,84 +87,121 @@ public class OSCAudioDirectionModule : Module
 
     private void SetupAudioCapture()
     {
-        try
+        lock (recoveryLock)  // Prevent multiple simultaneous recovery attempts
         {
-            if (deviceEnumerator == null)
+            try
             {
-                deviceEnumerator = new MMDeviceEnumerator();
-                Debug.WriteLine("[AudioDirection] Created new MMDeviceEnumerator");
+                if (deviceEnumerator == null)
+                {
+                    deviceEnumerator = new MMDeviceEnumerator();
+                    Debug.WriteLine("[AudioDirection] Created new MMDeviceEnumerator");
+                }
+
+                // Get default output device
+                MMDevice? newDevice = null;
+                try
+                {
+                    newDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                    if (newDevice == null)
+                    {
+                        Debug.WriteLine("[AudioDirection] ERROR: Failed to get default audio device");
+                        return;
+                    }
+
+                    Debug.WriteLine($"[AudioDirection] Found default device: {newDevice.FriendlyName}");
+
+                    // Check if we need to switch devices
+                    if (selectedDevice != null && selectedDevice.FriendlyName == newDevice.FriendlyName && 
+                        audioCapture?.CaptureState == CaptureState.Capturing)
+                    {
+                        newDevice.Dispose();
+                        return;
+                    }
+
+                    // Clean up old capture
+                    CleanupAudioCapture();
+
+                    // Set up new capture
+                    selectedDevice = newDevice;
+                    audioCapture = new WasapiLoopbackCapture(selectedDevice);
+                    audioCapture.DataAvailable += OnDataAvailable;
+                    audioCapture.WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(48000, 2);
+                    bytesPerSample = audioCapture.WaveFormat.BitsPerSample / audioCapture.WaveFormat.BlockAlign;
+                    
+                    Debug.WriteLine($"[AudioDirection] Set up new audio capture: {audioCapture.WaveFormat}");
+                    
+                    audioCapture.StartRecording();
+                    isRunning = true;
+                    errorCount = 0; // Reset error count on successful setup
+                }
+                catch (Exception)
+                {
+                    newDevice?.Dispose();  // Ensure we dispose if setup fails
+                    throw;
+                }
             }
-
-            // Get default output device
-            var newDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            if (newDevice == null)
+            catch (Exception ex)
             {
-                Debug.WriteLine("[AudioDirection] ERROR: Failed to get default audio device");
-                return;
+                Debug.WriteLine($"[AudioDirection] ERROR: Failed to set up audio capture: {ex.Message}");
+                isRunning = false;
+
+                // Handle error recovery
+                var now = DateTime.Now;
+                if ((now - lastErrorTime).TotalMilliseconds > ERROR_RESET_MS)
+                {
+                    errorCount = 0; // Reset error count if enough time has passed
+                }
+                
+                errorCount++;
+                lastErrorTime = now;
+
+                if (errorCount >= MAX_ERRORS)
+                {
+                    Debug.WriteLine("[AudioDirection] ERROR: Too many errors, stopping audio capture");
+                    return;
+                }
+
+                // Schedule recovery attempt with delay
+                Task.Delay(1000).ContinueWith(_ => 
+                {
+                    if (errorCount < MAX_ERRORS)  // Double-check error count before recovery
+                    {
+                        SetupAudioCapture();
+                    }
+                });
             }
+        }
+    }
 
-            Debug.WriteLine($"[AudioDirection] Found default device: {newDevice.FriendlyName}");
-
-            // Check if we need to switch devices
-            if (selectedDevice != null && selectedDevice.FriendlyName == newDevice.FriendlyName && 
-                audioCapture?.CaptureState == CaptureState.Capturing)
+    private void CleanupAudioCapture()
+    {
+        if (audioCapture != null)
+        {
+            Debug.WriteLine("[AudioDirection] Cleaning up old audio capture");
+            try
             {
-                newDevice.Dispose();
-                return;
-            }
-
-            // Clean up old capture
-            if (audioCapture != null)
-            {
-                Debug.WriteLine("[AudioDirection] Cleaning up old audio capture");
                 audioCapture.StopRecording();
-                audioCapture.Dispose();
                 audioCapture.DataAvailable -= OnDataAvailable;
-                audioCapture = null;
+                audioCapture.Dispose();
             }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[AudioDirection] Warning: Error during cleanup: {ex.Message}");
+            }
+            audioCapture = null;
+        }
 
-            if (selectedDevice != null)
+        if (selectedDevice != null)
+        {
+            try
             {
                 selectedDevice.Dispose();
-                selectedDevice = null;
             }
-
-            // Set up new capture
-            selectedDevice = newDevice;
-            audioCapture = new WasapiLoopbackCapture(selectedDevice);
-            audioCapture.DataAvailable += OnDataAvailable;
-            audioCapture.WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(48000, 2);
-            bytesPerSample = audioCapture.WaveFormat.BitsPerSample / audioCapture.WaveFormat.BlockAlign;
-            
-            Debug.WriteLine($"[AudioDirection] Set up new audio capture: {audioCapture.WaveFormat}");
-            
-            audioCapture.StartRecording();
-            isRunning = true;
-            errorCount = 0; // Reset error count on successful setup
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[AudioDirection] ERROR: Failed to set up audio capture: {ex.Message}");
-            isRunning = false;
-
-            // Handle error recovery
-            var now = DateTime.Now;
-            if ((now - lastErrorTime).TotalMilliseconds > ERROR_RESET_MS)
+            catch (Exception ex)
             {
-                errorCount = 0; // Reset error count if enough time has passed
+                Debug.WriteLine($"[AudioDirection] Warning: Error disposing device: {ex.Message}");
             }
-            
-            errorCount++;
-            lastErrorTime = now;
-
-            if (errorCount >= MAX_ERRORS)
-            {
-                Debug.WriteLine("[AudioDirection] ERROR: Too many errors, stopping audio capture");
-                return;
-            }
-
-            // Try to recover by forcing a new setup after a delay
-            Task.Delay(1000).ContinueWith(_ => SetupAudioCapture());
+            selectedDevice = null;
         }
     }
 
@@ -172,10 +210,10 @@ public class OSCAudioDirectionModule : Module
         switch (parameter.Lookup)
         {
             case AudioParameter.AudioVolume:
-                audioLevel = parameter.GetValue<float>();
+                currentVolume = parameter.GetValue<float>();
                 break;
             case AudioParameter.AudioDirection:
-                audioPeak = parameter.GetValue<float>();
+                currentDirection = parameter.GetValue<float>();
                 break;
         }
     }
@@ -273,20 +311,20 @@ public class OSCAudioDirectionModule : Module
         var now = DateTime.Now;
 
         // Send volume parameter if changed and rate limit passed
-        if (Math.Abs(smoothedVolume - audioLevel) > 0.001f && 
+        if (Math.Abs(smoothedVolume - currentVolume) > 0.001f && 
             (now - lastVolumeUpdate).TotalMilliseconds >= MIN_UPDATE_MS)
         {
-            audioLevel = smoothedVolume;
-            SendParameter(AudioParameter.AudioVolume, audioLevel);
+            currentVolume = smoothedVolume;
+            SendParameter(AudioParameter.AudioVolume, currentVolume);
             lastVolumeUpdate = now;
         }
 
         // Send direction parameter if changed and rate limit passed
-        if (Math.Abs(smoothedDirection - audioPeak) > 0.001f && 
+        if (Math.Abs(smoothedDirection - currentDirection) > 0.001f && 
             (now - lastDirectionUpdate).TotalMilliseconds >= MIN_UPDATE_MS)
         {
-            audioPeak = smoothedDirection;
-            SendParameter(AudioParameter.AudioDirection, audioPeak);
+            currentDirection = smoothedDirection;
+            SendParameter(AudioParameter.AudioDirection, currentDirection);
             lastDirectionUpdate = now;
         }
     }
@@ -303,22 +341,18 @@ public class OSCAudioDirectionModule : Module
         Debug.WriteLine("[AudioDirection] Stopping audio direction module");
         isRunning = false;
         
-        if (audioCapture != null)
-        {
-            audioCapture.StopRecording();
-            audioCapture.Dispose();
-            audioCapture = null;
-        }
-        
-        if (selectedDevice != null)
-        {
-            selectedDevice.Dispose();
-            selectedDevice = null;
-        }
+        CleanupAudioCapture();
         
         if (deviceEnumerator != null)
         {
-            deviceEnumerator.Dispose();
+            try
+            {
+                deviceEnumerator.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[AudioDirection] Warning: Error disposing enumerator: {ex.Message}");
+            }
             deviceEnumerator = null;
         }
     }

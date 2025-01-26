@@ -58,7 +58,19 @@ Two float parameters are available:
 
 ## Troubleshooting
 
-- If no audio is detected, check that your default output device is working
-- If direction seems incorrect, try adjusting the Direction Threshold
-- If volume is too low/high, adjust Manual Gain or enable Auto Gain
-- If updates are too jittery, increase the Smoothing value 
+- If no audio is detected:
+  - Check that your default output device is working
+  - Check the debug logs for any error messages
+  - The module will automatically attempt to recover
+- If direction seems incorrect:
+  - Try adjusting the Direction Threshold
+  - Make sure you have stereo audio playing
+- If volume is too low/high:
+  - Enable Auto Gain for automatic adjustment
+  - Or adjust Manual Gain if you prefer fixed gain
+- If updates are too jittery:
+  - Increase the Smoothing value
+  - Default smoothing uses a 3-sample history
+- If the module stops working:
+  - It will automatically attempt to recover up to 3 times
+  - Check the debug logs for error messages 
