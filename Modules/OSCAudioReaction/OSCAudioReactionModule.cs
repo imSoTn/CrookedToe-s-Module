@@ -12,7 +12,7 @@ using System;
 namespace VRCOSC.Modules.OSCAudioReaction;
 
 [ModuleTitle("Audio Direction")]
-[ModuleDescription("Sends audio direction and volume to VRChat parameters for stereo visualization")]
+[ModuleDescription("Sends audio direction and volume to VRChat for stereo visualization")]
 [ModuleType(ModuleType.Generic)]
 public class OSCAudioDirectionModule : Module
 {
