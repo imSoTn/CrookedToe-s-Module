@@ -5,10 +5,10 @@ A collection of modules for [VRCOSC](https://github.com/VolcanicArts/VRCOSC).
 ## Modules
 
 ### OSCLeash
-A module for controlling leash physics in VRChat using OSC parameters. For more information, see the [OSCLeash README](CrookedToesModules/OSCLeash/README.md).
+A module for controlling leash physics in VRChat using OSC parameters. For more information, see the [OSCLeash README](Modules/OSCLeash/README.md).
 
 ### OSCAudioReaction
-Captures your system's audio output and sends stereo direction and volume information to VRChat parameters for audio visualization. For more information, see the [OSCAudioReaction README](CrookedToesModules/OSCAudioReaction/README.md).
+Captures your system's audio output and sends stereo direction and volume information to VRChat parameters for audio visualization. For more information, see the [OSCAudioReaction README](Modules/OSCAudioReaction/README.md).
 
 ## Installation
 
