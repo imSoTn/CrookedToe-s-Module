@@ -48,3 +48,6 @@ nuget.config
 Thumbs.db
 ehthumbs.db
 Desktop.ini 
+
+#sln
+*.sln
