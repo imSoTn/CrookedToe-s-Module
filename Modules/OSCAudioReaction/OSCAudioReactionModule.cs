@@ -71,7 +71,7 @@ public class OSCAudioDirectionModule : Module
         CreateSlider(AudioSetting.Gain, "Manual Gain", "Manual gain multiplier when AGC is disabled", 1.0f, 0.1f, 5.0f);
         CreateToggle(AudioSetting.EnableAGC, "Auto Gain", "Enable automatic gain control", true);
         CreateSlider(AudioSetting.Smoothing, "Smoothing", "Smoothing factor for volume and direction changes (0 = none, 1 = max)", 0.5f, 0.0f, 1.0f);
-        CreateSlider(AudioSetting.DirectionThreshold, "Direction Threshold", "Minimum volume level to calculate direction", 0.01f, 0.001f, 0.1f);
+        CreateSlider(AudioSetting.DirectionThreshold, "Direction Threshold", "Minimum volume level to calculate direction", 0.01f, 0.0f, 0.1f, 0.005f);
 
         // Register parameters
         RegisterParameter<float>(AudioParameter.AudioDirection, "audio_direction", ParameterMode.Write, "Audio Direction", "Direction of the sound (0 = left, 0.5 = center, 1 = right)");
