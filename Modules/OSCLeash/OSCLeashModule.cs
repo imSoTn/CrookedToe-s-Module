@@ -2,11 +2,16 @@ using VRCOSC.App.SDK.Modules;
 using VRCOSC.App.SDK.Parameters;
 using VRCOSC.App.SDK.VRChat;
 using System.Diagnostics;
+using Valve.VR;
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 
 namespace VRCOSC.Modules.OSCLeash;
 
 [ModuleTitle("OSC Leash")]
-[ModuleDescription("Allows for controlling avatar movement with parameters")]
+[ModuleDescription("Allows for controlling avatar movement with parameters, including vertical movement via OpenVR")]
 [ModuleType(ModuleType.Generic)]
 [ModulePrefab("OSCLeash", "https://github.com/CrookedToe/OSCLeash/tree/main/Unity")]
 [ModuleInfo("https://github.com/CrookedToe/CrookedToe-s-Modules")]
@@ -21,6 +26,15 @@ public class OSCLeashModule : Module
     private float yPositive;
     private float yNegative;
     
+    // OpenVR variables
+    private CVRSystem vrSystem;
+    private float currentVerticalOffset;
+    private float targetVerticalOffset;
+    private float verticalVelocity;
+    private readonly Queue<float> verticalOffsetSmoothingBuffer = new(8);
+    private bool isVRInitialized;
+    private ETrackingUniverseOrigin originalTrackingOrigin;
+    
     // Input smoothing with larger buffer for more stability
     private readonly Queue<float> verticalSmoothingBuffer = new(8);
     private readonly Queue<float> horizontalSmoothingBuffer = new(8);
@@ -32,6 +46,12 @@ public class OSCLeashModule : Module
     
     // Batch update threshold
     private const float UpdateThreshold = 0.025f; // Increased threshold for less frequent updates
+
+    // Physics constants
+    private const float GRAVITY = 9.81f;
+    private const float TERMINAL_VELOCITY = -15.0f; // Faster terminal velocity for quicker falling
+    private const float SMOOTHING_FACTOR = 0.8f;
+    private const float VERTICAL_SMOOTHING = 0.95f;
 
     private enum LeashDirection
     {
@@ -64,7 +84,13 @@ public class OSCLeashModule : Module
         TurningEnabled,
         TurningMultiplier,
         TurningDeadzone,
-        TurningGoal
+        TurningGoal,
+        VerticalMovementEnabled,
+        VerticalMovementMultiplier,
+        VerticalMovementDeadzone,
+        VerticalMovementSmoothing,
+        MaxVerticalOffset,
+        VerticalStepSize
     }
 
     protected override void OnPreLoad()
@@ -83,6 +109,14 @@ public class OSCLeashModule : Module
         CreateSlider(OSCLeashSetting.TurningDeadzone, "Turning Deadzone", "Minimum stretch required for turning", 0.15f, 0.0f, 1.0f);
         CreateSlider(OSCLeashSetting.TurningGoal, "Turning Goal", "Maximum turning angle in degrees", 90f, 0.0f, 180.0f);
 
+        // Vertical movement settings
+        CreateToggle(OSCLeashSetting.VerticalMovementEnabled, "Enable Vertical Movement", "Enable vertical movement control via OpenVR", false);
+        CreateSlider(OSCLeashSetting.VerticalMovementMultiplier, "Vertical Movement Multiplier", "Vertical movement speed multiplier", 1.0f, 0.1f, 5.0f);
+        CreateSlider(OSCLeashSetting.VerticalMovementDeadzone, "Vertical Movement Deadzone", "Minimum stretch for vertical movement", 0.15f, 0.0f, 1.0f);
+        CreateSlider(OSCLeashSetting.VerticalMovementSmoothing, "Vertical Movement Smoothing", "Smoothing factor for vertical movement (higher = smoother)", 0.8f, 0.0f, 1.0f);
+        CreateSlider(OSCLeashSetting.MaxVerticalOffset, "Max Vertical Offset", "Maximum vertical offset in meters", 1.0f, 0.1f, 3.0f);
+        CreateSlider(OSCLeashSetting.VerticalStepSize, "Vertical Step Size", "Size of each vertical movement step (larger = less frequent but bigger steps)", 0.01f, 0.001f, 0.1f);
+
         // Register physbone state parameters
         RegisterParameter<bool>(OSCLeashParameter.IsGrabbed, "Leash_IsGrabbed", ParameterMode.Read, "Leash Grabbed", "Physbone grab state");
         RegisterParameter<float>(OSCLeashParameter.Stretch, "Leash_Stretch", ParameterMode.Read, "Leash Stretch", "Physbone stretch value");
@@ -94,6 +128,52 @@ public class OSCLeashModule : Module
         RegisterParameter<float>(OSCLeashParameter.XNegative, "Leash_XNegative", ParameterMode.Read, "Left Direction", "Left movement value", false);
         RegisterParameter<float>(OSCLeashParameter.YPositive, "Leash_YPositive", ParameterMode.Read, "Up Direction", "Upward movement value", false);
         RegisterParameter<float>(OSCLeashParameter.YNegative, "Leash_YNegative", ParameterMode.Read, "Down Direction", "Downward movement value", false);
+    }
+
+    protected override async Task<bool> OnModuleStart()
+    {
+        if (!GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled))
+        {
+            return true; // Skip OpenVR initialization if vertical movement is disabled
+        }
+
+        // Initialize OpenVR
+        EVRInitError initError = EVRInitError.None;
+        vrSystem = OpenVR.Init(ref initError, EVRApplicationType.VRApplication_Overlay);
+        if (initError != EVRInitError.None)
+        {
+            Log($"Failed to initialize OpenVR: {initError}");
+            return false;
+        }
+
+        // Store original tracking origin and get initial OVRAS offset
+        var compositor = OpenVR.Compositor;
+        if (compositor != null)
+        {
+            originalTrackingOrigin = compositor.GetTrackingSpace();
+            UpdateOVRASOffset();
+            isVRInitialized = true;
+        }
+
+        return true;
+    }
+
+    protected override async Task OnModuleStop()
+    {
+        // Reset vertical offset and cleanup OpenVR
+        if (isVRInitialized)
+        {
+            // Restore original tracking origin
+            var compositor = OpenVR.Compositor;
+            if (compositor != null)
+            {
+                compositor.SetTrackingSpace(originalTrackingOrigin);
+            }
+
+            OpenVR.Shutdown();
+            vrSystem = null;
+            isVRInitialized = false;
+        }
     }
 
     protected override void OnRegisteredParameterReceived(RegisteredParameter parameter)
@@ -148,6 +228,116 @@ public class OSCLeashModule : Module
         return sum / totalWeight;
     }
 
+    private void UpdateOVRASOffset()
+    {
+        if (!GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled) || !isVRInitialized) return;
+
+        try
+        {
+            // Try to read OpenVR Advanced Settings offset
+            var chaperoneSetup = OpenVR.ChaperoneSetup;
+            if (chaperoneSetup != null)
+            {
+                var standingZeroPose = new HmdMatrix34_t();
+                chaperoneSetup.GetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
+                targetVerticalOffset = standingZeroPose.m7; // Get the vertical component
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Error reading OVRAS offset: {ex.Message}");
+            targetVerticalOffset = 0;
+        }
+    }
+
+    private void UpdateVerticalOffset(float deltaTime)
+    {
+        if (!GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled) || !isVRInitialized) return;
+
+        try
+        {
+            var chaperoneSetup = OpenVR.ChaperoneSetup;
+            if (chaperoneSetup == null) return;
+
+            // Get current standing zero pose
+            var standingZeroPose = new HmdMatrix34_t();
+            chaperoneSetup.GetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
+
+            // Get step size once for the entire method
+            var stepSize = GetSettingValue<float>(OSCLeashSetting.VerticalStepSize);
+
+            float newOffset;
+            if (!isGrabbed)
+            {
+                // When released, fall to 0 with gravity
+                if (currentVerticalOffset > 0)
+                {
+                    // Apply gravity
+                    verticalVelocity = Math.Max(verticalVelocity - GRAVITY * deltaTime * 2f, TERMINAL_VELOCITY);
+                    newOffset = currentVerticalOffset + verticalVelocity * deltaTime;
+
+                    // Don't fall below 0
+                    if (newOffset <= 0)
+                    {
+                        newOffset = 0;
+                        verticalVelocity = 0;
+                    }
+
+                    // Quantize the falling movement to reduce jitter
+                    newOffset = (float)(Math.Floor(newOffset / stepSize) * stepSize);
+                }
+                else
+                {
+                    newOffset = 0;
+                    verticalVelocity = 0;
+                }
+            }
+            else
+            {
+                // When grabbed, calculate vertical movement
+                var verticalDeadzone = GetSettingValue<float>(OSCLeashSetting.VerticalMovementDeadzone);
+                if (stretch > verticalDeadzone)
+                {
+                    // Calculate vertical movement - yPositive is up, yNegative is down
+                    var verticalDelta = (yPositive - yNegative) * GetSettingValue<float>(OSCLeashSetting.VerticalMovementMultiplier) * 5f;
+                    
+                    // Update target directly instead of relative to current
+                    targetVerticalOffset += verticalDelta * deltaTime;
+                    
+                    // Clamp to max height but allow full range of movement
+                    var maxOffset = GetSettingValue<float>(OSCLeashSetting.MaxVerticalOffset);
+                    targetVerticalOffset = Math.Clamp(targetVerticalOffset, 0, maxOffset);
+
+                    // Quantize the target to reduce jitter
+                    targetVerticalOffset = (float)(Math.Floor(targetVerticalOffset / stepSize) * stepSize);
+                }
+                
+                // Apply smoothing to movement
+                newOffset = currentVerticalOffset * VERTICAL_SMOOTHING + targetVerticalOffset * (1 - VERTICAL_SMOOTHING);
+
+                // Quantize the final position to reduce jitter
+                newOffset = (float)(Math.Floor(newOffset / stepSize) * stepSize);
+                
+                verticalVelocity = 0;
+            }
+
+            // Only update if the change is at least one step size
+            if (Math.Abs(newOffset - currentVerticalOffset) >= stepSize)
+            {
+                currentVerticalOffset = newOffset;
+
+                // Apply the offset
+                standingZeroPose.m7 = currentVerticalOffset;
+                chaperoneSetup.SetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
+                chaperoneSetup.CommitWorkingCopy(EChaperoneConfigFile.Live);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Error updating vertical offset: {ex.Message}");
+        }
+    }
+
     [ModuleUpdate(ModuleUpdateMode.Custom, true, 33)]
     private void UpdateMovement()
     {
@@ -155,15 +345,30 @@ public class OSCLeashModule : Module
         if (frameCounter++ % (FrameSkip + 1) != 0)
             return;
 
+        var deltaTime = 1f/30f; // Fixed timestep at 30Hz
+
         var player = GetPlayer();
-        if (player == null || !isGrabbed)
+        if (player == null)
         {
-            player?.StopRun();
-            player?.MoveVertical(0);
-            player?.MoveHorizontal(0);
-            player?.LookHorizontal(0);
+            if (GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled))
+            {
+                UpdateVerticalOffset(deltaTime);
+            }
+            return;
+        }
+
+        if (!isGrabbed)
+        {
+            player.StopRun();
+            player.MoveVertical(0);
+            player.MoveHorizontal(0);
+            player.LookHorizontal(0);
             verticalSmoothingBuffer.Clear();
             horizontalSmoothingBuffer.Clear();
+            if (GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled))
+            {
+                UpdateVerticalOffset(deltaTime);
+            }
             return;
         }
 
@@ -173,6 +378,12 @@ public class OSCLeashModule : Module
         
         var rawVerticalOutput = Clamp((zPositive - zNegative) * outputMultiplier);
         var rawHorizontalOutput = Clamp((xPositive - xNegative) * outputMultiplier);
+
+        // Handle vertical movement via OpenVR if enabled
+        if (GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled))
+        {
+            UpdateVerticalOffset(deltaTime);
+        }
 
         // Early exit if no significant movement
         if (Math.Abs(rawVerticalOutput) < UpdateThreshold && Math.Abs(rawHorizontalOutput) < UpdateThreshold)
