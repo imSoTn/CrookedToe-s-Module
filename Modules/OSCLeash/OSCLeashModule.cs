@@ -48,10 +48,16 @@ public class OSCLeashModule : Module
     private const float UpdateThreshold = 0.025f; // Increased threshold for less frequent updates
 
     // Physics constants
-    private const float GRAVITY = 9.81f;
-    private const float TERMINAL_VELOCITY = -15.0f; // Faster terminal velocity for quicker falling
-    private const float SMOOTHING_FACTOR = 0.8f;
-    private const float VERTICAL_SMOOTHING = 0.95f;
+    private static class Constants
+    {
+        public const float GRAVITY = 9.81f;
+        public const float TERMINAL_VELOCITY = -15.0f;
+        public const float VERTICAL_SMOOTHING = 0.95f;
+        public const float SMOOTHING_WEIGHT_DECAY = 0.8f;
+        public const int SMOOTHING_BUFFER_SIZE = 8;
+        public const int FRAME_SKIP = 1;
+        public const float UPDATE_THRESHOLD = 0.025f;
+    }
 
     private enum LeashDirection
     {
@@ -90,7 +96,8 @@ public class OSCLeashModule : Module
         VerticalMovementDeadzone,
         VerticalMovementSmoothing,
         MaxVerticalOffset,
-        VerticalStepSize
+        VerticalStepMultiplier,
+        VerticalHorizontalCompensation
     }
 
     protected override void OnPreLoad()
@@ -112,10 +119,11 @@ public class OSCLeashModule : Module
         // Vertical movement settings
         CreateToggle(OSCLeashSetting.VerticalMovementEnabled, "Enable Vertical Movement", "Enable vertical movement control via OpenVR", false);
         CreateSlider(OSCLeashSetting.VerticalMovementMultiplier, "Vertical Movement Multiplier", "Vertical movement speed multiplier", 1.0f, 0.1f, 5.0f);
-        CreateSlider(OSCLeashSetting.VerticalMovementDeadzone, "Vertical Movement Deadzone", "Minimum stretch for vertical movement", 0.15f, 0.0f, 1.0f);
+        CreateSlider(OSCLeashSetting.VerticalMovementDeadzone, "Vertical Movement Deadzone", "Minimum stretch for vertical movement", 0.15f, 0.0f, 1.0f, 0.05f);
         CreateSlider(OSCLeashSetting.VerticalMovementSmoothing, "Vertical Movement Smoothing", "Smoothing factor for vertical movement (higher = smoother)", 0.8f, 0.0f, 1.0f);
         CreateSlider(OSCLeashSetting.MaxVerticalOffset, "Max Vertical Offset", "Maximum vertical offset in meters", 1.0f, 0.1f, 3.0f);
-        CreateSlider(OSCLeashSetting.VerticalStepSize, "Vertical Step Size", "Size of each vertical movement step (larger = less frequent but bigger steps)", 0.01f, 0.001f, 0.1f);
+        CreateSlider(OSCLeashSetting.VerticalStepMultiplier, "Vertical Step Multiplier", "Multiplier for dynamic step size based on vertical stretch (larger = bigger steps)", 0.01f, 0.001f, 0.1f, 0.001f);
+        CreateSlider(OSCLeashSetting.VerticalHorizontalCompensation, "Horizontal Movement Compensation", "Reduces vertical movement when moving horizontally (higher = more reduction)", 1.0f, 0.0f, 2.0f);
 
         // Register physbone state parameters
         RegisterParameter<bool>(OSCLeashParameter.IsGrabbed, "Leash_IsGrabbed", ParameterMode.Read, "Leash Grabbed", "Physbone grab state");
@@ -213,7 +221,6 @@ public class OSCLeashModule : Module
         if (buffer.Count > SmoothingBufferSize)
             buffer.Dequeue();
         
-        // Weighted average - recent values have more influence
         float sum = 0;
         float weight = 1;
         float totalWeight = 0;
@@ -222,7 +229,7 @@ public class OSCLeashModule : Module
         {
             sum += value * weight;
             totalWeight += weight;
-            weight *= 0.8f; // Exponential decay
+            weight *= Constants.SMOOTHING_WEIGHT_DECAY;
         }
         
         return sum / totalWeight;
@@ -252,90 +259,143 @@ public class OSCLeashModule : Module
 
     private void UpdateVerticalOffset(float deltaTime)
     {
-        if (!GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled) || !isVRInitialized) return;
+        if (!ShouldUpdateVerticalOffset()) return;
 
         try
         {
             var chaperoneSetup = OpenVR.ChaperoneSetup;
             if (chaperoneSetup == null) return;
 
-            // Get current standing zero pose
-            var standingZeroPose = new HmdMatrix34_t();
-            chaperoneSetup.GetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
+            var standingZeroPose = GetCurrentStandingPose(chaperoneSetup);
+            var stepSize = CalculateStepSize();
+            var newOffset = CalculateNewVerticalOffset(deltaTime, stepSize);
 
-            // Get step size once for the entire method
-            var stepSize = GetSettingValue<float>(OSCLeashSetting.VerticalStepSize);
-
-            float newOffset;
-            if (!isGrabbed)
+            // Only update if the change is significant
+            if (ShouldApplyVerticalUpdate(newOffset, stepSize))
             {
-                // When released, fall to 0 with gravity
-                if (currentVerticalOffset > 0)
-                {
-                    // Apply gravity
-                    verticalVelocity = Math.Max(verticalVelocity - GRAVITY * deltaTime * 2f, TERMINAL_VELOCITY);
-                    newOffset = currentVerticalOffset + verticalVelocity * deltaTime;
-
-                    // Don't fall below 0
-                    if (newOffset <= 0)
-                    {
-                        newOffset = 0;
-                        verticalVelocity = 0;
-                    }
-
-                    // Quantize the falling movement to reduce jitter
-                    newOffset = (float)(Math.Floor(newOffset / stepSize) * stepSize);
-                }
-                else
-                {
-                    newOffset = 0;
-                    verticalVelocity = 0;
-                }
-            }
-            else
-            {
-                // When grabbed, calculate vertical movement
-                var verticalDeadzone = GetSettingValue<float>(OSCLeashSetting.VerticalMovementDeadzone);
-                if (stretch > verticalDeadzone)
-                {
-                    // Calculate vertical movement - yPositive is up, yNegative is down
-                    var verticalDelta = (yPositive - yNegative) * GetSettingValue<float>(OSCLeashSetting.VerticalMovementMultiplier) * 5f;
-                    
-                    // Update target directly instead of relative to current
-                    targetVerticalOffset += verticalDelta * deltaTime;
-                    
-                    // Clamp to max height but allow full range of movement
-                    var maxOffset = GetSettingValue<float>(OSCLeashSetting.MaxVerticalOffset);
-                    targetVerticalOffset = Math.Clamp(targetVerticalOffset, 0, maxOffset);
-
-                    // Quantize the target to reduce jitter
-                    targetVerticalOffset = (float)(Math.Floor(targetVerticalOffset / stepSize) * stepSize);
-                }
-                
-                // Apply smoothing to movement
-                newOffset = currentVerticalOffset * VERTICAL_SMOOTHING + targetVerticalOffset * (1 - VERTICAL_SMOOTHING);
-
-                // Quantize the final position to reduce jitter
-                newOffset = (float)(Math.Floor(newOffset / stepSize) * stepSize);
-                
-                verticalVelocity = 0;
-            }
-
-            // Only update if the change is at least one step size
-            if (Math.Abs(newOffset - currentVerticalOffset) >= stepSize)
-            {
-                currentVerticalOffset = newOffset;
-
-                // Apply the offset
-                standingZeroPose.m7 = currentVerticalOffset;
-                chaperoneSetup.SetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
-                chaperoneSetup.CommitWorkingCopy(EChaperoneConfigFile.Live);
+                ApplyVerticalOffset(chaperoneSetup, standingZeroPose, newOffset);
             }
         }
         catch (Exception ex)
         {
             Log($"Error updating vertical offset: {ex.Message}");
         }
+    }
+
+    private bool ShouldUpdateVerticalOffset()
+    {
+        return GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled) && isVRInitialized;
+    }
+
+    private HmdMatrix34_t GetCurrentStandingPose(CVRChaperoneSetup chaperoneSetup)
+    {
+        var standingZeroPose = new HmdMatrix34_t();
+        chaperoneSetup.GetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
+        return standingZeroPose;
+    }
+
+    private float CalculateStepSize()
+    {
+        float verticalStretch = Math.Abs(yPositive - yNegative);
+        float baseStepMultiplier = GetSettingValue<float>(OSCLeashSetting.VerticalStepMultiplier);
+        float stepSize = baseStepMultiplier * (1.0f + verticalStretch);
+
+        // Apply horizontal compensation
+        float horizontalStretch = Math.Max(Math.Abs(xPositive - xNegative), Math.Abs(zPositive - zNegative));
+        float horizontalCompensation = GetSettingValue<float>(OSCLeashSetting.VerticalHorizontalCompensation);
+        return stepSize * (1.0f - (horizontalStretch * horizontalCompensation));
+    }
+
+    private float CalculateNewVerticalOffset(float deltaTime, float stepSize)
+    {
+        if (!isGrabbed)
+        {
+            return CalculateFallingOffset(deltaTime, stepSize);
+        }
+
+        return CalculateGrabbedOffset(deltaTime, stepSize);
+    }
+
+    private float CalculateFallingOffset(float deltaTime, float stepSize)
+    {
+        if (currentVerticalOffset == 0)
+        {
+            verticalVelocity = 0;
+            return 0;
+        }
+
+        // Apply gravity in the direction towards 0
+        float gravityDirection = currentVerticalOffset > 0 ? -1 : 1;
+        verticalVelocity = Math.Clamp(
+            verticalVelocity + Constants.GRAVITY * gravityDirection * deltaTime * 2f,
+            Constants.TERMINAL_VELOCITY,
+            -Constants.TERMINAL_VELOCITY
+        );
+
+        float newOffset = currentVerticalOffset + verticalVelocity * deltaTime;
+
+        // Check if we've crossed 0
+        if ((currentVerticalOffset > 0 && newOffset <= 0) || 
+            (currentVerticalOffset < 0 && newOffset >= 0))
+        {
+            verticalVelocity = 0;
+            return 0;
+        }
+
+        // Quantize the falling movement
+        return (float)(Math.Floor(newOffset / stepSize) * stepSize);
+    }
+
+    private float CalculateGrabbedOffset(float deltaTime, float stepSize)
+    {
+        var verticalDeadzone = GetSettingValue<float>(OSCLeashSetting.VerticalMovementDeadzone);
+        if (stretch <= verticalDeadzone)
+        {
+            verticalVelocity = 0;
+            return currentVerticalOffset;
+        }
+
+        // Check horizontal deadzone
+        float horizontalCombined = Math.Max(Math.Abs(xPositive - xNegative), Math.Abs(zPositive - zNegative));
+        float horizontalDeadzone = GetSettingValue<float>(OSCLeashSetting.VerticalHorizontalCompensation);
+        
+        if (horizontalCombined >= horizontalDeadzone)
+        {
+            verticalVelocity = 0;
+            return currentVerticalOffset;
+        }
+
+        // Calculate vertical movement
+        var verticalDelta = (yNegative - yPositive) * 
+            GetSettingValue<float>(OSCLeashSetting.VerticalMovementMultiplier) * 5f * 
+            (1.0f - (horizontalCombined * horizontalDeadzone));
+
+        targetVerticalOffset += verticalDelta * deltaTime;
+        
+        // Clamp to max height
+        var maxOffset = GetSettingValue<float>(OSCLeashSetting.MaxVerticalOffset);
+        targetVerticalOffset = Math.Clamp(targetVerticalOffset, -maxOffset, maxOffset);
+        targetVerticalOffset = (float)(Math.Floor(targetVerticalOffset / stepSize) * stepSize);
+
+        // Apply smoothing
+        var newOffset = currentVerticalOffset * Constants.VERTICAL_SMOOTHING + 
+            targetVerticalOffset * (1 - Constants.VERTICAL_SMOOTHING);
+
+        verticalVelocity = 0;
+        return (float)(Math.Floor(newOffset / stepSize) * stepSize);
+    }
+
+    private bool ShouldApplyVerticalUpdate(float newOffset, float stepSize)
+    {
+        return Math.Abs(newOffset - currentVerticalOffset) >= stepSize;
+    }
+
+    private void ApplyVerticalOffset(CVRChaperoneSetup chaperoneSetup, HmdMatrix34_t standingZeroPose, float newOffset)
+    {
+        currentVerticalOffset = newOffset;
+        standingZeroPose.m7 = currentVerticalOffset;
+        chaperoneSetup.SetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
+        chaperoneSetup.CommitWorkingCopy(EChaperoneConfigFile.Live);
     }
 
     [ModuleUpdate(ModuleUpdateMode.Custom, true, 33)]
