@@ -95,7 +95,6 @@ public class OSCLeashModule : Module
         VerticalMovementMultiplier,
         VerticalMovementDeadzone,
         VerticalMovementSmoothing,
-        MaxVerticalOffset,
         VerticalStepMultiplier,
         VerticalHorizontalCompensation
     }
@@ -121,7 +120,6 @@ public class OSCLeashModule : Module
         CreateSlider(OSCLeashSetting.VerticalMovementMultiplier, "Vertical Movement Multiplier", "Vertical movement speed multiplier", 1.0f, 0.1f, 5.0f);
         CreateSlider(OSCLeashSetting.VerticalMovementDeadzone, "Vertical Movement Deadzone", "Minimum stretch for vertical movement", 0.15f, 0.0f, 1.0f, 0.05f);
         CreateSlider(OSCLeashSetting.VerticalMovementSmoothing, "Vertical Movement Smoothing", "Smoothing factor for vertical movement (higher = smoother)", 0.8f, 0.0f, 1.0f);
-        CreateSlider(OSCLeashSetting.MaxVerticalOffset, "Max Vertical Offset", "Maximum vertical offset in meters", 1.0f, 0.1f, 3.0f);
         CreateSlider(OSCLeashSetting.VerticalStepMultiplier, "Vertical Step Multiplier", "Multiplier for dynamic step size based on vertical stretch (larger = bigger steps)", 0.01f, 0.001f, 0.1f, 0.001f);
         CreateSlider(OSCLeashSetting.VerticalHorizontalCompensation, "Horizontal Movement Compensation", "Reduces vertical movement when moving horizontally (higher = more reduction)", 1.0f, 0.0f, 2.0f);
 
@@ -371,10 +369,6 @@ public class OSCLeashModule : Module
             (1.0f - (horizontalCombined * horizontalDeadzone));
 
         targetVerticalOffset += verticalDelta * deltaTime;
-        
-        // Clamp to max height
-        var maxOffset = GetSettingValue<float>(OSCLeashSetting.MaxVerticalOffset);
-        targetVerticalOffset = Math.Clamp(targetVerticalOffset, -maxOffset, maxOffset);
         targetVerticalOffset = (float)(Math.Floor(targetVerticalOffset / stepSize) * stepSize);
 
         // Apply smoothing
