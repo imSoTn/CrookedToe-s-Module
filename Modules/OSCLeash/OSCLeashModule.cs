@@ -1,5 +1,6 @@
 using VRCOSC.App.SDK.Modules;
 using VRCOSC.App.SDK.Parameters;
+using VRCOSC.App.SDK.VRChat;
 using Valve.VR;
 using System;
 using System.Collections.Generic;
@@ -15,47 +16,116 @@ namespace VRCOSC.Modules.OSCLeash;
 [ModuleInfo("https://github.com/CrookedToe/CrookedToe-s-Modules")]
 public class OSCLeashModule : Module
 {
-    // Fields
-    private bool isGrabbed;
-    private float stretch;
-    private float zPositive;
-    private float zNegative;
-    private float xPositive;
-    private float xNegative;
-    private float yPositive;
-    private float yNegative;
+    // Movement state
+    private readonly MovementState state = new();
     
-    // OpenVR variables
-    private CVRSystem vrSystem;
+    // OpenVR state
     private float currentVerticalOffset;
     private float targetVerticalOffset;
     private float verticalVelocity;
-    private readonly Queue<float> verticalOffsetSmoothingBuffer = new(8);
-    private bool isVRInitialized;
+    private bool wasOpenVRAvailable;
     private ETrackingUniverseOrigin originalTrackingOrigin;
+    private CVRCompositor? compositor;
     
-    // Smoothing buffers
-    private readonly Queue<float> verticalSmoothingBuffer = new(8);
-    private readonly Queue<float> horizontalSmoothingBuffer = new(8);
-    private const int SmoothingBufferSize = 8;
+    // Movement smoothing
+    private readonly MovementSmoother verticalSmoother = new(8);
+    private readonly MovementSmoother horizontalSmoother = new(8);
     
-    // Frame skipping for performance
+    // Performance optimization
     private int frameCounter;
-    private const int FrameSkip = 1; // Process every other frame
+    private const int FrameSkip = 1;
+    private const float UpdateThreshold = 0.025f;
+    private Vector3 lastMovement;
+    private bool needsMovementUpdate;
     
-    // Batch update threshold
-    private const float UpdateThreshold = 0.025f; // Increased threshold for less frequent updates
-    
-    // Constants for physics and smoothing
-    private static class Constants
+    // Physics constants
+    private static class PhysicsConstants
     {
         public const float GRAVITY = 9.81f;
         public const float TERMINAL_VELOCITY = -15.0f;
         public const float VERTICAL_SMOOTHING = 0.95f;
-        public const float SMOOTHING_WEIGHT_DECAY = 0.8f;
-        public const int SMOOTHING_BUFFER_SIZE = 8;
-        public const int FRAME_SKIP = 1;
-        public const float UPDATE_THRESHOLD = 0.025f;
+    }
+    
+    private class MovementState
+    {
+        public bool IsGrabbed { get; set; }
+        public float Stretch { get; set; }
+        public float ZPositive { get; set; }
+        public float ZNegative { get; set; }
+        public float XPositive { get; set; }
+        public float XNegative { get; set; }
+        public float YPositive { get; set; }
+        public float YNegative { get; set; }
+        public bool IsVerticalMovementEnabled { get; set; }
+        
+        public float GetVerticalStretch() => Math.Abs(YPositive - YNegative);
+        public float GetHorizontalStretch() => Math.Max(Math.Abs(XPositive - XNegative), Math.Abs(ZPositive - ZNegative));
+    }
+    
+    private readonly struct Vector3
+    {
+        public readonly float X, Y, Z;
+        
+        public Vector3(float x, float y, float z)
+        {
+            X = x;
+            Y = y;
+            Z = z;
+        }
+        
+        public float DistanceTo(Vector3 other)
+        {
+            float dx = X - other.X;
+            float dy = Y - other.Y;
+            float dz = Z - other.Z;
+            return MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+    }
+    
+    private class MovementSmoother
+    {
+        private readonly Queue<float> buffer;
+        private readonly int maxSize;
+        private float lastValue;
+        public static float SMOOTHING_WEIGHT_DECAY = 0.8f;
+        public static float MIN_MOVEMENT_DELTA = 0.001f;
+        public static int SMOOTHING_BUFFER_SIZE = 8;
+        
+        public MovementSmoother(int size)
+        {
+            maxSize = size;
+            buffer = new Queue<float>(size);
+        }
+        
+        public float Smooth(float newValue)
+        {
+            if (Math.Abs(newValue - lastValue) < MIN_MOVEMENT_DELTA)
+                return lastValue;
+                
+            buffer.Enqueue(newValue);
+            if (buffer.Count > maxSize)
+                buffer.Dequeue();
+            
+            float sum = 0;
+            float weight = 1;
+            float totalWeight = 0;
+            
+            foreach (var value in buffer.Reverse())
+            {
+                sum += value * weight;
+                totalWeight += weight;
+                weight *= SMOOTHING_WEIGHT_DECAY;
+            }
+            
+            lastValue = sum / totalWeight;
+            return lastValue;
+        }
+        
+        public void Clear()
+        {
+            buffer.Clear();
+            lastValue = 0;
+        }
     }
     
     private enum LeashDirection
@@ -98,7 +168,6 @@ public class OSCLeashModule : Module
         VerticalHorizontalCompensation
     }
     
-    // Module Lifecycle Methods
     protected override void OnPreLoad()
     {
         // Create settings
@@ -122,11 +191,9 @@ public class OSCLeashModule : Module
         CreateSlider(OSCLeashSetting.VerticalStepMultiplier, "Vertical Step Multiplier", "Multiplier for dynamic step size based on vertical stretch (larger = bigger steps)", 0.01f, 0.001f, 0.1f, 0.001f);
         CreateSlider(OSCLeashSetting.VerticalHorizontalCompensation, "Horizontal Movement Compensation", "Reduces vertical movement when moving horizontally (higher = more reduction)", 1.0f, 0.0f, 2.0f);
         
-        // Register physbone state parameters
+        // Register parameters
         RegisterParameter<bool>(OSCLeashParameter.IsGrabbed, "Leash_IsGrabbed", ParameterMode.Read, "Leash Grabbed", "Physbone grab state");
         RegisterParameter<float>(OSCLeashParameter.Stretch, "Leash_Stretch", ParameterMode.Read, "Leash Stretch", "Physbone stretch value");
-        
-        // Direction parameters
         RegisterParameter<float>(OSCLeashParameter.ZPositive, "Leash_ZPositive", ParameterMode.Read, "Forward Direction", "Forward movement value", false);
         RegisterParameter<float>(OSCLeashParameter.ZNegative, "Leash_ZNegative", ParameterMode.Read, "Backward Direction", "Backward movement value", false);
         RegisterParameter<float>(OSCLeashParameter.XPositive, "Leash_XPositive", ParameterMode.Read, "Right Direction", "Right movement value", false);
@@ -135,73 +202,185 @@ public class OSCLeashModule : Module
         RegisterParameter<float>(OSCLeashParameter.YNegative, "Leash_YNegative", ParameterMode.Read, "Down Direction", "Downward movement value", false);
     }
     
-    protected override async Task<bool> OnModuleStart()
+    protected override Task<bool> OnModuleStart()
     {
-        if (!GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled))
+        state.IsVerticalMovementEnabled = GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled);
+        if (state.IsVerticalMovementEnabled)
         {
-            return true; // Skip OpenVR initialization if vertical movement is disabled
+            InitializeOpenVR();
+        }
+        return Task.FromResult(true);
+    }
+    
+    protected override Task OnModuleStop()
+    {
+        if (GetOVRClient().HasInitialised && compositor != null)
+        {
+            compositor.SetTrackingSpace(originalTrackingOrigin);
+            compositor = null;
+        }
+        return Task.CompletedTask;
+    }
+    
+    private void InitializeOpenVR()
+    {
+        if (!GetOVRClient().HasInitialised)
+        {
+            Log("OpenVR is not initialized. Vertical movement will be disabled until OpenVR is available.");
+            wasOpenVRAvailable = false;
+            return;
         }
         
-        EVRInitError initError = EVRInitError.None;
-        vrSystem = OpenVR.Init(ref initError, EVRApplicationType.VRApplication_Overlay);
-        if (initError != EVRInitError.None)
-        {
-            Log($"Failed to initialize OpenVR: {initError}");
-            return false;
-        }
-        
-        var compositor = OpenVR.Compositor;
+        wasOpenVRAvailable = true;
+        compositor = OpenVR.Compositor;
         if (compositor != null)
         {
             originalTrackingOrigin = compositor.GetTrackingSpace();
             UpdateOVRASOffset();
-            isVRInitialized = true;
         }
-        return true;
     }
     
-    protected override async Task OnModuleStop()
+    [ModuleUpdate(ModuleUpdateMode.Custom, true, 33)]
+    private void UpdateMovement()
     {
-        if (isVRInitialized)
+        if (frameCounter++ % (FrameSkip + 1) != 0)
+            return;
+            
+        if (GetOVRClient().HasInitialised != wasOpenVRAvailable)
         {
-            var compositor = OpenVR.Compositor;
-            if (compositor != null)
-            {
-                compositor.SetTrackingSpace(originalTrackingOrigin);
-            }
-            OpenVR.Shutdown();
-            vrSystem = null;
-            isVRInitialized = false;
+            InitializeOpenVR();
         }
+        
+        var deltaTime = 1f / 30f;
+        UpdateVerticalMovementIfNeeded(deltaTime);
+        UpdateHorizontalMovementIfNeeded(deltaTime);
+    }
+    
+    private void UpdateVerticalMovementIfNeeded(float deltaTime)
+    {
+        if (!state.IsVerticalMovementEnabled || !GetOVRClient().HasInitialised)
+            return;
+            
+        if (!needsMovementUpdate && !state.IsGrabbed)
+            return;
+            
+        UpdateVerticalOffset(deltaTime);
+    }
+    
+    private void UpdateHorizontalMovementIfNeeded(float deltaTime)
+    {
+        var player = GetPlayer();
+        if (player == null)
+            return;
+            
+        var newMovement = CalculateMovement();
+        if (!needsMovementUpdate && lastMovement.DistanceTo(newMovement) < UpdateThreshold)
+        {
+            if (!state.IsGrabbed)
+            {
+                ResetMovement(player);
+            }
+            return;
+        }
+        
+        ApplyMovement(player, newMovement);
+        lastMovement = newMovement;
+        needsMovementUpdate = false;
+    }
+    
+    private Vector3 CalculateMovement()
+    {
+        if (!state.IsGrabbed)
+            return new Vector3(0, 0, 0);
+            
+        var strengthMultiplier = GetSettingValue<float>(OSCLeashSetting.StrengthMultiplier);
+        var outputMultiplier = state.Stretch * strengthMultiplier;
+        
+        var vertical = verticalSmoother.Smooth((state.ZPositive - state.ZNegative) * outputMultiplier);
+        var horizontal = horizontalSmoother.Smooth((state.XPositive - state.XNegative) * outputMultiplier);
+        var upDown = state.YPositive + state.YNegative;
+        
+        return new Vector3(horizontal, upDown, vertical);
+    }
+    
+    private void ResetMovement(Player player)
+    {
+        player.StopRun();
+        player.MoveVertical(0);
+        player.MoveHorizontal(0);
+        player.LookHorizontal(0);
+        verticalSmoother.Clear();
+        horizontalSmoother.Clear();
+    }
+    
+    private void ApplyMovement(Player player, Vector3 movement)
+    {
+        var upDownDeadzone = GetSettingValue<float>(OSCLeashSetting.UpDownDeadzone);
+        if (movement.Y >= upDownDeadzone)
+        {
+            ResetMovement(player);
+            return;
+        }
+        
+        var upDownCompensation = GetSettingValue<float>(OSCLeashSetting.UpDownCompensation);
+        var yModifier = upDownCompensation != 0 ? 
+            Clamp(1.0f - (movement.Y * upDownCompensation)) : 1.0f;
+            
+        var vertical = yModifier != 0 ? movement.Z / yModifier : movement.Z;
+        var horizontal = yModifier != 0 ? movement.X / yModifier : movement.X;
+        
+        var runDeadzone = GetSettingValue<float>(OSCLeashSetting.RunDeadzone);
+        if (state.Stretch > runDeadzone)
+            player.Run();
+        else
+            player.StopRun();
+            
+        player.MoveVertical(vertical);
+        player.MoveHorizontal(horizontal);
+        
+        UpdateTurning(player, movement);
+    }
+    
+    private void UpdateTurning(Player player, Vector3 movement)
+    {
+        var turningEnabled = GetSettingValue<bool>(OSCLeashSetting.TurningEnabled);
+        if (!turningEnabled || state.Stretch <= GetSettingValue<float>(OSCLeashSetting.TurningDeadzone))
+        {
+            player.LookHorizontal(0);
+            return;
+        }
+        
+        player.LookHorizontal(CalculateTurningOutput(movement));
     }
     
     protected override void OnRegisteredParameterReceived(RegisteredParameter parameter)
     {
+        needsMovementUpdate = true;
         switch (parameter.Lookup)
         {
             case OSCLeashParameter.IsGrabbed:
-                isGrabbed = parameter.GetValue<bool>();
+                state.IsGrabbed = parameter.GetValue<bool>();
                 break;
             case OSCLeashParameter.Stretch:
-                stretch = parameter.GetValue<float>();
+                state.Stretch = parameter.GetValue<float>();
                 break;
             case OSCLeashParameter.ZPositive:
-                zPositive = parameter.GetValue<float>();
+                state.ZPositive = parameter.GetValue<float>();
                 break;
             case OSCLeashParameter.ZNegative:
-                zNegative = parameter.GetValue<float>();
+                state.ZNegative = parameter.GetValue<float>();
                 break;
             case OSCLeashParameter.XPositive:
-                xPositive = parameter.GetValue<float>();
+                state.XPositive = parameter.GetValue<float>();
                 break;
             case OSCLeashParameter.XNegative:
-                xNegative = parameter.GetValue<float>();
+                state.XNegative = parameter.GetValue<float>();
                 break;
             case OSCLeashParameter.YPositive:
-                yPositive = parameter.GetValue<float>();
+                state.YPositive = parameter.GetValue<float>();
                 break;
             case OSCLeashParameter.YNegative:
-                yNegative = parameter.GetValue<float>();
+                state.YNegative = parameter.GetValue<float>();
                 break;
         }
     }
@@ -210,7 +389,7 @@ public class OSCLeashModule : Module
     private float SmoothValue(Queue<float> buffer, float newValue)
     {
         buffer.Enqueue(newValue);
-        if (buffer.Count > SmoothingBufferSize)
+        if (buffer.Count > MovementSmoother.SMOOTHING_BUFFER_SIZE)
             buffer.Dequeue();
         
         float sum = 0;
@@ -221,7 +400,7 @@ public class OSCLeashModule : Module
         {
             sum += value * weight;
             totalWeight += weight;
-            weight *= Constants.SMOOTHING_WEIGHT_DECAY;
+            weight *= MovementSmoother.SMOOTHING_WEIGHT_DECAY;
         }
         return sum / totalWeight;
     }
@@ -229,7 +408,7 @@ public class OSCLeashModule : Module
     // OpenVR Update Methods
     private void UpdateOVRASOffset()
     {
-        if (!GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled) || !isVRInitialized)
+        if (!GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled) || !GetOVRClient().HasInitialised)
             return;
         
         try
@@ -275,7 +454,7 @@ public class OSCLeashModule : Module
     
     private bool ShouldUpdateVerticalOffset()
     {
-        return GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled) && isVRInitialized;
+        return GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled) && GetOVRClient().HasInitialised;
     }
     
     private HmdMatrix34_t GetCurrentStandingPose(CVRChaperoneSetup chaperoneSetup)
@@ -287,18 +466,18 @@ public class OSCLeashModule : Module
     
     private float CalculateStepSize()
     {
-        float verticalStretch = Math.Abs(yPositive - yNegative);
+        float verticalStretch = Math.Abs(state.YPositive - state.YNegative);
         float baseStepMultiplier = GetSettingValue<float>(OSCLeashSetting.VerticalStepMultiplier);
         float stepSize = baseStepMultiplier * (1.0f + verticalStretch);
         
-        float horizontalStretch = Math.Max(Math.Abs(xPositive - xNegative), Math.Abs(zPositive - zNegative));
+        float horizontalStretch = Math.Max(Math.Abs(state.XPositive - state.XNegative), Math.Abs(state.ZPositive - state.ZNegative));
         float horizontalCompensation = GetSettingValue<float>(OSCLeashSetting.VerticalHorizontalCompensation);
         return stepSize * (1.0f - (horizontalStretch * horizontalCompensation));
     }
     
     private float CalculateNewVerticalOffset(float deltaTime, float stepSize)
     {
-        if (!isGrabbed)
+        if (!state.IsGrabbed)
             return CalculateFallingOffset(deltaTime, stepSize);
         
         return CalculateGrabbedOffset(deltaTime, stepSize);
@@ -313,8 +492,8 @@ public class OSCLeashModule : Module
         }
         
         float gravityDirection = currentVerticalOffset > 0 ? -1 : 1;
-        verticalVelocity = Math.Clamp(verticalVelocity + Constants.GRAVITY * gravityDirection * deltaTime * 2f,
-            Constants.TERMINAL_VELOCITY, -Constants.TERMINAL_VELOCITY);
+        verticalVelocity = Math.Clamp(verticalVelocity + PhysicsConstants.GRAVITY * gravityDirection * deltaTime * 2f,
+            PhysicsConstants.TERMINAL_VELOCITY, -PhysicsConstants.TERMINAL_VELOCITY);
         float newOffset = currentVerticalOffset + verticalVelocity * deltaTime;
         
         if ((currentVerticalOffset > 0 && newOffset <= 0) || (currentVerticalOffset < 0 && newOffset >= 0))
@@ -329,13 +508,13 @@ public class OSCLeashModule : Module
     private float CalculateGrabbedOffset(float deltaTime, float stepSize)
     {
         var verticalDeadzone = GetSettingValue<float>(OSCLeashSetting.VerticalMovementDeadzone);
-        if (stretch <= verticalDeadzone)
+        if (state.Stretch <= verticalDeadzone)
         {
             verticalVelocity = 0;
             return currentVerticalOffset;
         }
         
-        float horizontalCombined = Math.Max(Math.Abs(xPositive - xNegative), Math.Abs(zPositive - zNegative));
+        float horizontalCombined = Math.Max(Math.Abs(state.XPositive - state.XNegative), Math.Abs(state.ZPositive - state.ZNegative));
         float horizontalDeadzone = GetSettingValue<float>(OSCLeashSetting.VerticalHorizontalCompensation);
         if (horizontalCombined >= horizontalDeadzone)
         {
@@ -343,12 +522,12 @@ public class OSCLeashModule : Module
             return currentVerticalOffset;
         }
         
-        var verticalDelta = (yNegative - yPositive) * GetSettingValue<float>(OSCLeashSetting.VerticalMovementMultiplier) * 5f *
+        var verticalDelta = (state.YNegative - state.YPositive) * GetSettingValue<float>(OSCLeashSetting.VerticalMovementMultiplier) * 5f *
                             (1.0f - (horizontalCombined * horizontalDeadzone));
         targetVerticalOffset += verticalDelta * deltaTime;
         targetVerticalOffset = (float)(Math.Floor(targetVerticalOffset / stepSize) * stepSize);
         
-        var newOffset = currentVerticalOffset * Constants.VERTICAL_SMOOTHING + targetVerticalOffset * (1 - Constants.VERTICAL_SMOOTHING);
+        var newOffset = currentVerticalOffset * PhysicsConstants.VERTICAL_SMOOTHING + targetVerticalOffset * (1 - PhysicsConstants.VERTICAL_SMOOTHING);
         verticalVelocity = 0;
         return (float)(Math.Floor(newOffset / stepSize) * stepSize);
     }
@@ -366,133 +545,41 @@ public class OSCLeashModule : Module
         chaperoneSetup.CommitWorkingCopy(EChaperoneConfigFile.Live);
     }
     
-    [ModuleUpdate(ModuleUpdateMode.Custom, true, 33)]
-    private void UpdateMovement()
-    {
-        if (frameCounter++ % (FrameSkip + 1) != 0)
-            return;
-        
-        var deltaTime = 1f / 30f;
-        var player = GetPlayer();
-        if (player == null)
-        {
-            if (GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled))
-                UpdateVerticalOffset(deltaTime);
-            return;
-        }
-        
-        if (!isGrabbed)
-        {
-            player.StopRun();
-            player.MoveVertical(0);
-            player.MoveHorizontal(0);
-            player.LookHorizontal(0);
-            verticalSmoothingBuffer.Clear();
-            horizontalSmoothingBuffer.Clear();
-            if (GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled))
-                UpdateVerticalOffset(deltaTime);
-            return;
-        }
-        
-        var strengthMultiplier = GetSettingValue<float>(OSCLeashSetting.StrengthMultiplier);
-        var outputMultiplier = stretch * strengthMultiplier;
-        var rawVerticalOutput = Clamp((zPositive - zNegative) * outputMultiplier);
-        var rawHorizontalOutput = Clamp((xPositive - xNegative) * outputMultiplier);
-        
-        if (GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled))
-            UpdateVerticalOffset(deltaTime);
-        
-        if (Math.Abs(rawVerticalOutput) < UpdateThreshold && Math.Abs(rawHorizontalOutput) < UpdateThreshold)
-        {
-            player.StopRun();
-            player.MoveVertical(0);
-            player.MoveHorizontal(0);
-            player.LookHorizontal(0);
-            return;
-        }
-        
-        var verticalOutput = SmoothValue(verticalSmoothingBuffer, rawVerticalOutput);
-        var horizontalOutput = SmoothValue(horizontalSmoothingBuffer, rawHorizontalOutput);
-        var yCombined = yPositive + yNegative;
-        var upDownDeadzone = GetSettingValue<float>(OSCLeashSetting.UpDownDeadzone);
-        if (yCombined >= upDownDeadzone)
-        {
-            player.StopRun();
-            player.MoveVertical(0);
-            player.MoveHorizontal(0);
-            player.LookHorizontal(0);
-            return;
-        }
-        
-        var upDownCompensation = GetSettingValue<float>(OSCLeashSetting.UpDownCompensation);
-        if (upDownCompensation != 0)
-        {
-            var yModifier = Clamp(1.0f - (yCombined * upDownCompensation));
-            if (yModifier != 0.0f)
-            {
-                verticalOutput /= yModifier;
-                horizontalOutput /= yModifier;
-            }
-        }
-        
-        var runDeadzone = GetSettingValue<float>(OSCLeashSetting.RunDeadzone);
-        if (stretch > runDeadzone)
-            player.Run();
-        else
-            player.StopRun();
-        
-        player.MoveVertical(verticalOutput);
-        player.MoveHorizontal(horizontalOutput);
-        
-        var turningEnabled = GetSettingValue<bool>(OSCLeashSetting.TurningEnabled);
-        if (turningEnabled && stretch > GetSettingValue<float>(OSCLeashSetting.TurningDeadzone))
-        {
-            var turningOutput = CalculateTurningOutput();
-            player.LookHorizontal(turningOutput);
-        }
-        else
-        {
-            player.LookHorizontal(0);
-        }
-    }
-    
-    private float CalculateTurningOutput()
+    private float CalculateTurningOutput(Vector3 movement)
     {
         var turningMultiplier = GetSettingValue<float>(OSCLeashSetting.TurningMultiplier);
         var turningGoal = Math.Max(0f, GetSettingValue<float>(OSCLeashSetting.TurningGoal)) / 180f;
         var direction = GetSettingValue<LeashDirection>(OSCLeashSetting.LeashDirection);
-        var horizontalOutput = Clamp((xPositive - xNegative) * stretch * GetSettingValue<float>(OSCLeashSetting.StrengthMultiplier));
-        var verticalOutput = Clamp((zPositive - zNegative) * stretch * GetSettingValue<float>(OSCLeashSetting.StrengthMultiplier));
         float turningOutput = 0f;
         
         switch (direction)
         {
             case LeashDirection.North:
-                if (zPositive < turningGoal)
+                if (movement.Z < turningGoal)
                 {
-                    turningOutput = horizontalOutput * turningMultiplier;
-                    turningOutput += (xPositive > xNegative) ? zNegative : -zNegative;
+                    turningOutput = movement.X * turningMultiplier;
+                    turningOutput += (movement.X > 0) ? -movement.X : movement.X;
                 }
                 break;
             case LeashDirection.South:
-                if (zNegative < turningGoal)
+                if (-movement.Z < turningGoal)
                 {
-                    turningOutput = -horizontalOutput * turningMultiplier;
-                    turningOutput += (xPositive > xNegative) ? -zPositive : zPositive;
+                    turningOutput = -movement.X * turningMultiplier;
+                    turningOutput += (movement.X > 0) ? -movement.X : movement.X;
                 }
                 break;
             case LeashDirection.East:
-                if (xPositive < turningGoal)
+                if (movement.X < turningGoal)
                 {
-                    turningOutput = verticalOutput * turningMultiplier;
-                    turningOutput += (zPositive > zNegative) ? xNegative : -xNegative;
+                    turningOutput = movement.Z * turningMultiplier;
+                    turningOutput += (movement.Z > 0) ? -movement.Z : movement.Z;
                 }
                 break;
             case LeashDirection.West:
-                if (xNegative < turningGoal)
+                if (-movement.X < turningGoal)
                 {
-                    turningOutput = -verticalOutput * turningMultiplier;
-                    turningOutput += (zPositive > zNegative) ? -xPositive : xPositive;
+                    turningOutput = -movement.Z * turningMultiplier;
+                    turningOutput += (movement.Z > 0) ? -movement.Z : movement.Z;
                 }
                 break;
         }
