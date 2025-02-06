@@ -58,78 +58,85 @@ The following float parameters are available:
 ### Frequency Band Parameters
 Each band outputs a normalized value (0-1) representing its relative power:
 
-- `audio_subbass`: 16-60Hz
-- `audio_bass`: 60-250Hz
-- `audio_lowmid`: 250-500Hz
-- `audio_mid`: 500Hz-2kHz
-- `audio_uppermid`: 2-4kHz
-- `audio_presence`: 4-6kHz
-- `audio_brilliance`: 6-20kHz
+- `audio_subbass`: 20-60Hz (Sub Bass)
+- `audio_bass`: 60-250Hz (Bass)
+- `audio_lowmid`: 250-500Hz (Low Mids)
+- `audio_mid`: 500Hz-2kHz (Mids)
+- `audio_uppermid`: 2-4kHz (Upper Mids)
+- `audio_presence`: 4-6kHz (Presence)
+- `audio_brilliance`: 6-25kHz (Brilliance)
 
-Note: Disabled bands output 0. Enabled bands are normalized relative to the total power of all enabled bands.
+Note: 
+- Disabled bands output 0
+- Enabled bands are normalized relative to the total power of all enabled bands
+- When "Scale Frequencies with Volume" is disabled, the sum of all enabled bands will equal 1.0
+- Each band's power is calculated using proper frequency bin analysis and magnitude-squared values
+- Bands use exponential smoothing for stable transitions
 
 ## Avatar Presets
 
-Current preset configurations from the code:
+Current preset configurations:
 
 1. **Default**
+   - FFT Size: 8192 (~5.86Hz resolution)
    - Gain: 1.0
    - Smoothing: 0.5
    - Direction Threshold: 0.01
-   - FFT Size: 8192
-   - Frequency Smoothing: Default (0.7)
+   - Frequency Smoothing: 0.7
    - AGC: Enabled
 
 2. **Low Latency**
+   - FFT Size: 4096 (~11.7Hz resolution)
    - Gain: 1.2
-   - Smoothing: 0.3 (Quick response time)
+   - Smoothing: 0.3
    - Direction Threshold: 0.01
-   - FFT Size: 4096 (Minimum latency)
-   - Frequency Smoothing: Default (0.7)
+   - Frequency Smoothing: 0.7
    - AGC: Enabled
 
 3. **Voice Optimized**
-   - Gain: 1.5 (Enhanced for vocal range)
-   - Smoothing: 0.4 (Balanced for speech)
-   - Direction Threshold: 0.02 (More stable direction)
-   - FFT Size: 4096 (Low latency for speech)
-   - Frequency Smoothing: Default (0.7)
+   - FFT Size: 4096 (~11.7Hz resolution)
+   - Gain: 1.5
+   - Smoothing: 0.4
+   - Direction Threshold: 0.02
+   - Frequency Smoothing: 0.7
    - AGC: Enabled
 
 4. **High Smoothing**
+   - FFT Size: 16384 (~2.93Hz resolution)
    - Gain: 1.0
-   - Smoothing: 0.8 (Maximum smoothing)
+   - Smoothing: 0.8
    - Direction Threshold: 0.015
-   - FFT Size: 16384 (High resolution)
-   - Frequency Smoothing: Default (0.7)
+   - Frequency Smoothing: 0.7
    - AGC: Enabled
 
 5. **Music Optimized**
+   - FFT Size: 8192 (~5.86Hz resolution)
    - Gain: 1.1
-   - Smoothing: 0.5 (Balanced)
+   - Smoothing: 0.5
    - Direction Threshold: 0.01
-   - FFT Size: 8192 (Balanced resolution)
-   - Frequency Smoothing: Default (0.7)
+   - Frequency Smoothing: 0.7
    - AGC: Enabled
 
-Note: While Peak Detection is configurable, it is currently not actively used in the audio processing.
+Note: FFT resolution values indicate the frequency spacing between bins. Lower values mean better frequency resolution but higher latency.
 
 ## Technical Details
 
 - Uses NAudio's `WasapiLoopbackCapture` for system audio capture
 - 48kHz sample rate, 32-bit float stereo format
-- Adaptive FFT size (4096 to 16384 samples)
-- Hann window applied to audio samples
+- Fixed FFT sizes based on preset (4096, 8192, or 16384 samples)
+- Hamming window applied to audio samples
 - Direction calculation:
   - Per-band direction weighted by band power
   - Only enabled bands contribute
   - Smooth center drift when signal is weak
 - Frequency analysis:
-  - Power spectrum calculation
-  - Band-specific normalization
+  - Power spectrum calculation using magnitude-squared values
+  - Proper frequency bin to band mapping
   - Independent band enabling/disabling
+  - Optional volume scaling for band outputs
 - Memory management:
   - Thread-safe FFT buffer handling
+  - Zero-padding for partial buffers
   - Proper resource cleanup
   - Automatic error recovery
 

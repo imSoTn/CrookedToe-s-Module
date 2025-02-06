@@ -1,25 +1,27 @@
 using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
-
-namespace VRCOSC.Modules.OSCAudioReaction.AudioProcessing;
+using VRCOSC.App.SDK.Modules;
+namespace CrookedToe.Modules.OSCAudioReaction.AudioProcessing;
 
 public class AudioDeviceManager : IAudioDeviceManager
 {
     private readonly IAudioConfiguration _config;
-    private MMDeviceEnumerator? _deviceEnumerator;
+    private readonly MMDeviceEnumerator _deviceEnumerator;
     private MMDevice? _selectedDevice;
     private WasapiLoopbackCapture? _audioCapture;
     private bool _isDisposed;
+    private readonly OSCAudioDirectionModule _module;
 
     public bool IsInitialized => _audioCapture?.CaptureState == CaptureState.Capturing;
     public string? CurrentDeviceName => _selectedDevice?.FriendlyName;
     public WasapiLoopbackCapture? AudioCapture => _audioCapture;
     public event EventHandler<WaveInEventArgs>? DataAvailable;
 
-    public AudioDeviceManager(IAudioConfiguration config)
+    public AudioDeviceManager(IAudioConfiguration config, OSCAudioDirectionModule module)
     {
         _config = config;
+        _module = module;
         _deviceEnumerator = new MMDeviceEnumerator();
     }
 
@@ -29,11 +31,8 @@ public class AudioDeviceManager : IAudioDeviceManager
         
         try
         {
-            _deviceEnumerator ??= new MMDeviceEnumerator();
             var newDevice = _deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-
-            if (_selectedDevice?.FriendlyName == newDevice.FriendlyName && 
-                _audioCapture?.CaptureState == CaptureState.Capturing)
+            if (_selectedDevice?.FriendlyName == newDevice.FriendlyName && IsInitialized)
             {
                 newDevice.Dispose();
                 return true;
@@ -42,9 +41,8 @@ public class AudioDeviceManager : IAudioDeviceManager
             await InitializeDeviceInternalAsync(newDevice);
             return true;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            System.Diagnostics.Debug.WriteLine($"[AudioDeviceManager] Initialize error: {ex.Message}");
             return false;
         }
     }
@@ -55,14 +53,12 @@ public class AudioDeviceManager : IAudioDeviceManager
         
         try
         {
-            _deviceEnumerator ??= new MMDeviceEnumerator();
             var newDevice = _deviceEnumerator.GetDevice(deviceId);
             await InitializeDeviceInternalAsync(newDevice);
             return true;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            System.Diagnostics.Debug.WriteLine($"[AudioDeviceManager] Initialize device error: {ex.Message}");
             return false;
         }
     }
@@ -81,75 +77,43 @@ public class AudioDeviceManager : IAudioDeviceManager
             )
         };
 
-        // Log device and format details
-        System.Diagnostics.Debug.WriteLine($"[AudioDeviceManager] Device: {_selectedDevice.FriendlyName}");
-        System.Diagnostics.Debug.WriteLine($"[AudioDeviceManager] Format: {_audioCapture.WaveFormat}");
-
         _audioCapture.DataAvailable += (s, e) => DataAvailable?.Invoke(s, e);
         await Task.Run(() => _audioCapture.StartRecording());
     }
 
     public void StopCapture()
     {
-        if (_isDisposed) throw new ObjectDisposedException(nameof(AudioDeviceManager));
-        
         try
         {
-            if (_audioCapture != null)
+            if (_audioCapture?.CaptureState == CaptureState.Capturing)
             {
-                if (_audioCapture.CaptureState == CaptureState.Capturing)
-                {
-                    _audioCapture.StopRecording();
-                }
-                _audioCapture.Dispose();
-                _audioCapture = null;
+                _audioCapture.StopRecording();
             }
+            _audioCapture?.Dispose();
+            _audioCapture = null;
 
-            if (_selectedDevice != null)
-            {
-                _selectedDevice.Dispose();
-                _selectedDevice = null;
-            }
+            _selectedDevice?.Dispose();
+            _selectedDevice = null;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            System.Diagnostics.Debug.WriteLine($"[AudioDeviceManager] Stop capture error: {ex.Message}");
         }
     }
 
     public IEnumerable<MMDevice> GetAvailableDevices()
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(AudioDeviceManager));
-        
-        _deviceEnumerator ??= new MMDeviceEnumerator();
         return _deviceEnumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
-    }
-
-    protected virtual void Dispose(bool disposing)
-    {
-        if (!_isDisposed)
-        {
-            if (disposing)
-            {
-                StopCapture();
-                if (_deviceEnumerator != null)
-                {
-                    _deviceEnumerator.Dispose();
-                    _deviceEnumerator = null;
-                }
-            }
-            _isDisposed = true;
-        }
     }
 
     public void Dispose()
     {
-        Dispose(true);
-        GC.SuppressFinalize(this);
+        if (_isDisposed) return;
+        
+        StopCapture();
+        _deviceEnumerator.Dispose();
+        _isDisposed = true;
     }
 
-    ~AudioDeviceManager()
-    {
-        Dispose(false);
-    }
+    ~AudioDeviceManager() => Dispose();
 } 

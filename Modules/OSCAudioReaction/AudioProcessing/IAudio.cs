@@ -1,20 +1,22 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using VRCOSC.App.SDK.Modules;
 
-namespace VRCOSC.Modules.OSCAudioReaction.AudioProcessing;
+namespace CrookedToe.Modules.OSCAudioReaction.AudioProcessing;
 
 public interface IAudioConfiguration
 {
-    float Gain { get; set; }
-    bool EnableAGC { get; set; }
-    float Smoothing { get; set; }
-    float DirectionThreshold { get; set; }
-    int UpdateIntervalMs { get; set; }
-    string? PreferredDeviceId { get; set; }
-    int FrequencyBands { get; set; }
-    float FrequencySmoothing { get; set; }
-    int FftSize { get; set; }
-    float SpikeThreshold { get; set; }
+    // Immutable configuration properties
+    float Gain { get; init; }
+    bool EnableAGC { get; init; }
+    float Smoothing { get; init; }
+    float DirectionThreshold { get; init; }
+    int UpdateIntervalMs { get; init; }
+    string? PreferredDeviceId { get; init; }
+    int FrequencyBands { get; init; }
+    float FrequencySmoothing { get; init; }
+    int FftSize { get; init; }
+    float SpikeThreshold { get; init; }
 }
 
 public interface IAudioDeviceManager : IDisposable
@@ -31,6 +33,7 @@ public interface IAudioDeviceManager : IDisposable
 
 public interface IAudioProcessor : IDisposable
 {
+    // Read-only state properties
     float CurrentVolume { get; }
     float CurrentDirection { get; }
     float CurrentGain { get; }
@@ -39,6 +42,7 @@ public interface IAudioProcessor : IDisposable
     bool IsActive { get; }
     bool HasSpike { get; }
 
+    // State mutation methods
     (float[] bands, float volume, float direction, bool spike) ProcessAudioData(WaveInEventArgs e, bool scaleWithVolume);
     void Reset();
     void UpdateEnabledBands(bool[] enabledBands);
@@ -50,7 +54,7 @@ public interface IAudioProcessor : IDisposable
 public interface IAudioFactory
 {
     IAudioProcessor CreateProcessor(IAudioConfiguration config, int bytesPerSample);
-    IAudioDeviceManager CreateDeviceManager(IAudioConfiguration config);
+    IAudioDeviceManager CreateDeviceManager(IAudioConfiguration config, OSCAudioDirectionModule module);
 }
 
 [Serializable]

@@ -7,7 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
-namespace VRCOSC.Modules.OSCLeash;
+namespace CrookedToe.Modules.OSCLeash;
 
 [ModuleTitle("OSC Leash")]
 [ModuleDescription("Allows for controlling avatar movement with parameters, including vertical movement via OpenVR")]
@@ -170,36 +170,110 @@ public class OSCLeashModule : Module
     
     protected override void OnPreLoad()
     {
-        // Create settings
-        CreateDropdown(OSCLeashSetting.LeashDirection, "Leash Direction", "Direction the leash faces", LeashDirection.North);
-        CreateSlider(OSCLeashSetting.RunDeadzone, "Run Deadzone", "Stretch threshold for running", 0.70f, 0.0f, 1.0f);
-        CreateSlider(OSCLeashSetting.WalkDeadzone, "Walk Deadzone", "Stretch threshold for walking", 0.15f, 0.0f, 1.0f);
-        CreateSlider(OSCLeashSetting.StrengthMultiplier, "Strength Multiplier", "Movement strength multiplier", 1.2f, 0.1f, 5.0f);
-        CreateSlider(OSCLeashSetting.UpDownCompensation, "Up/Down Compensation", "Compensation for vertical movement", 1.0f, 0.0f, 2.0f);
-        CreateSlider(OSCLeashSetting.UpDownDeadzone, "Up/Down Deadzone", "Vertical angle deadzone", 0.5f, 0.0f, 1.0f);
-        
-        CreateToggle(OSCLeashSetting.TurningEnabled, "Enable Turning", "Enable turning control with the leash", false);
-        CreateSlider(OSCLeashSetting.TurningMultiplier, "Turning Multiplier", "Turning speed multiplier", 0.80f, 0.1f, 2.0f);
-        CreateSlider(OSCLeashSetting.TurningDeadzone, "Turning Deadzone", "Minimum stretch required for turning", 0.15f, 0.0f, 1.0f);
-        CreateSlider(OSCLeashSetting.TurningGoal, "Turning Goal", "Maximum turning angle in degrees", 90f, 0.0f, 180.0f);
-        
-        // Vertical movement settings
-        CreateToggle(OSCLeashSetting.VerticalMovementEnabled, "Enable Vertical Movement", "Enable vertical movement control via OpenVR", false);
-        CreateSlider(OSCLeashSetting.VerticalMovementMultiplier, "Vertical Movement Multiplier", "Vertical movement speed multiplier", 1.0f, 0.1f, 5.0f);
-        CreateSlider(OSCLeashSetting.VerticalMovementDeadzone, "Vertical Movement Deadzone", "Minimum stretch for vertical movement", 0.15f, 0.0f, 1.0f, 0.05f);
-        CreateSlider(OSCLeashSetting.VerticalMovementSmoothing, "Vertical Movement Smoothing", "Smoothing factor for vertical movement (higher = smoother)", 0.8f, 0.0f, 1.0f);
-        CreateSlider(OSCLeashSetting.VerticalStepMultiplier, "Vertical Step Multiplier", "Multiplier for dynamic step size based on vertical stretch (larger = bigger steps)", 0.01f, 0.001f, 0.1f, 0.001f);
-        CreateSlider(OSCLeashSetting.VerticalHorizontalCompensation, "Horizontal Movement Compensation", "Reduces vertical movement when moving horizontally (higher = more reduction)", 1.0f, 0.0f, 2.0f);
-        
+        // Basic Movement Settings
+        CreateSlider(OSCLeashSetting.WalkDeadzone, "Walk Deadzone", 
+            "Minimum stretch required to start walking (lower = more sensitive)", 
+            0.15f, 0.0f, 1.0f);
+            
+        CreateSlider(OSCLeashSetting.RunDeadzone, "Run Deadzone", 
+            "Stretch threshold to switch from walking to running", 
+            0.70f, 0.0f, 1.0f);
+            
+        CreateSlider(OSCLeashSetting.StrengthMultiplier, "Movement Strength", 
+            "Overall movement speed multiplier (higher = faster movement)", 
+            1.2f, 0.1f, 5.0f);
+            
+        CreateDropdown(OSCLeashSetting.LeashDirection, "Leash Direction", 
+            "Which direction the leash faces relative to your avatar", 
+            LeashDirection.North);
+
+        // Turning Controls
+        CreateToggle(OSCLeashSetting.TurningEnabled, "Enable Turning", 
+            "Allows the leash to control avatar rotation", 
+            false);
+            
+        CreateSlider(OSCLeashSetting.TurningMultiplier, "Turn Speed", 
+            "How quickly the avatar rotates when turning (higher = faster turning)", 
+            0.80f, 0.1f, 2.0f);
+            
+        CreateSlider(OSCLeashSetting.TurningDeadzone, "Turn Deadzone", 
+            "Minimum stretch needed before turning starts", 
+            0.15f, 0.0f, 1.0f);
+            
+        CreateSlider(OSCLeashSetting.TurningGoal, "Maximum Turn Angle", 
+            "Largest angle (in degrees) the avatar can turn", 
+            90f, 0.0f, 180.0f);
+
+        // Vertical Movement Settings
+        CreateToggle(OSCLeashSetting.VerticalMovementEnabled, "Enable Vertical Movement", 
+            "Allows the leash to control up/down movement via OpenVR", 
+            false);
+            
+        CreateSlider(OSCLeashSetting.VerticalMovementMultiplier, "Vertical Speed", 
+            "How quickly you move up/down (higher = faster vertical movement)", 
+            1.0f, 0.1f, 5.0f);
+            
+        CreateSlider(OSCLeashSetting.VerticalMovementDeadzone, "Vertical Deadzone", 
+            "Minimum stretch required for vertical movement", 
+            0.15f, 0.0f, 1.0f, 0.05f);
+            
+        CreateSlider(OSCLeashSetting.VerticalMovementSmoothing, "Vertical Smoothing", 
+            "Smooths out vertical movement (higher = smoother but more latency)", 
+            0.8f, 0.0f, 1.0f);
+            
+        CreateSlider(OSCLeashSetting.VerticalStepMultiplier, "Step Size", 
+            "How large each vertical movement step is (larger = bigger steps)", 
+            0.01f, 0.001f, 0.1f, 0.001f);
+            
+        CreateSlider(OSCLeashSetting.VerticalHorizontalCompensation, "Vertical Angle", 
+            "Minimum angle from horizontal needed for vertical movement (higher = more vertical pull needed, 45° = diagonal)", 
+            45f, 15f, 75f);
+
+        // Create logical groups
+        CreateGroup("Basic Movement", 
+            OSCLeashSetting.WalkDeadzone,
+            OSCLeashSetting.RunDeadzone,
+            OSCLeashSetting.StrengthMultiplier,
+            OSCLeashSetting.LeashDirection);
+
+        CreateGroup("Turning Controls",
+            OSCLeashSetting.TurningEnabled,
+            OSCLeashSetting.TurningMultiplier,
+            OSCLeashSetting.TurningDeadzone,
+            OSCLeashSetting.TurningGoal);
+
+        CreateGroup("Vertical Movement",
+            OSCLeashSetting.VerticalMovementEnabled,
+            OSCLeashSetting.VerticalMovementMultiplier,
+            OSCLeashSetting.VerticalMovementDeadzone,
+            OSCLeashSetting.VerticalMovementSmoothing,
+            OSCLeashSetting.VerticalStepMultiplier,
+            OSCLeashSetting.VerticalHorizontalCompensation);
+
         // Register parameters
-        RegisterParameter<bool>(OSCLeashParameter.IsGrabbed, "Leash_IsGrabbed", ParameterMode.Read, "Leash Grabbed", "Physbone grab state");
-        RegisterParameter<float>(OSCLeashParameter.Stretch, "Leash_Stretch", ParameterMode.Read, "Leash Stretch", "Physbone stretch value");
-        RegisterParameter<float>(OSCLeashParameter.ZPositive, "Leash_ZPositive", ParameterMode.Read, "Forward Direction", "Forward movement value", false);
-        RegisterParameter<float>(OSCLeashParameter.ZNegative, "Leash_ZNegative", ParameterMode.Read, "Backward Direction", "Backward movement value", false);
-        RegisterParameter<float>(OSCLeashParameter.XPositive, "Leash_XPositive", ParameterMode.Read, "Right Direction", "Right movement value", false);
-        RegisterParameter<float>(OSCLeashParameter.XNegative, "Leash_XNegative", ParameterMode.Read, "Left Direction", "Left movement value", false);
-        RegisterParameter<float>(OSCLeashParameter.YPositive, "Leash_YPositive", ParameterMode.Read, "Up Direction", "Upward movement value", false);
-        RegisterParameter<float>(OSCLeashParameter.YNegative, "Leash_YNegative", ParameterMode.Read, "Down Direction", "Downward movement value", false);
+        RegisterParameter<bool>(OSCLeashParameter.IsGrabbed, "Leash_IsGrabbed", 
+            ParameterMode.Read, "Leash Grabbed", "Whether the leash is currently being held");
+            
+        RegisterParameter<float>(OSCLeashParameter.Stretch, "Leash_Stretch", 
+            ParameterMode.Read, "Leash Stretch", "How far the leash is stretched");
+            
+        RegisterParameter<float>(OSCLeashParameter.ZPositive, "Leash_ZPositive", 
+            ParameterMode.Read, "Forward Pull", "Forward movement value", false);
+            
+        RegisterParameter<float>(OSCLeashParameter.ZNegative, "Leash_ZNegative", 
+            ParameterMode.Read, "Backward Pull", "Backward movement value", false);
+            
+        RegisterParameter<float>(OSCLeashParameter.XPositive, "Leash_XPositive", 
+            ParameterMode.Read, "Right Pull", "Rightward movement value", false);
+            
+        RegisterParameter<float>(OSCLeashParameter.XNegative, "Leash_XNegative", 
+            ParameterMode.Read, "Left Pull", "Leftward movement value", false);
+            
+        RegisterParameter<float>(OSCLeashParameter.YPositive, "Leash_YPositive", 
+            ParameterMode.Read, "Upward Pull", "Upward movement value", false);
+            
+        RegisterParameter<float>(OSCLeashParameter.YNegative, "Leash_YNegative", 
+            ParameterMode.Read, "Downward Pull", "Downward movement value", false);
     }
     
     protected override Task<bool> OnModuleStart()
@@ -468,11 +542,27 @@ public class OSCLeashModule : Module
     {
         float verticalStretch = Math.Abs(state.YPositive - state.YNegative);
         float baseStepMultiplier = GetSettingValue<float>(OSCLeashSetting.VerticalStepMultiplier);
-        float stepSize = baseStepMultiplier * (1.0f + verticalStretch);
+        float verticalDeadzone = GetSettingValue<float>(OSCLeashSetting.VerticalMovementDeadzone);
+        float angleThreshold = GetSettingValue<float>(OSCLeashSetting.VerticalHorizontalCompensation);
+
+        // Calculate the primary pull direction angle
+        float horizontalComponent = Math.Max(Math.Abs(state.XPositive - state.XNegative), Math.Abs(state.ZPositive - state.ZNegative));
+        float totalStretch = MathF.Sqrt(verticalStretch * verticalStretch + horizontalComponent * horizontalComponent);
         
-        float horizontalStretch = Math.Max(Math.Abs(state.XPositive - state.XNegative), Math.Abs(state.ZPositive - state.ZNegative));
-        float horizontalCompensation = GetSettingValue<float>(OSCLeashSetting.VerticalHorizontalCompensation);
-        return stepSize * (1.0f - (horizontalStretch * horizontalCompensation));
+        if (totalStretch < verticalDeadzone)
+            return 0f;
+
+        // Calculate the angle of pull (in degrees) from horizontal plane
+        float pullAngle = MathF.Abs(MathF.Asin(verticalStretch / totalStretch) * (180f / MathF.PI));
+        
+        // Only allow vertical movement if the pull exceeds the user-defined angle threshold
+        if (pullAngle < angleThreshold)
+            return 0f;
+            
+        // Scale the step size based on how much the pull exceeds the threshold
+        // At threshold you get minimal movement, at 90 degrees you get full movement
+        float angleMultiplier = (pullAngle - angleThreshold) / (90f - angleThreshold);
+        return baseStepMultiplier * verticalStretch * angleMultiplier;
     }
     
     private float CalculateNewVerticalOffset(float deltaTime, float stepSize)
