@@ -188,10 +188,9 @@ Note: FFT resolution values indicate the frequency spacing between bins. Lower v
 
 ## Installation
 
-1. Place the module in your VRCOSC modules folder
-2. Enable the module in VRCOSC
-3. Select appropriate presets and frequency bands for your avatar
-4. Add the parameters to your avatar
+1. Enable the module in VRCOSC
+2. Select appropriate presets and frequency bands for your avatar
+3. Add the parameters to your avatar
 
 ## Avatar Setup
 

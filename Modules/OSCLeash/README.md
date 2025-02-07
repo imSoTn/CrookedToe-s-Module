@@ -32,10 +32,8 @@ This is a VRCOSC module port of [ZenithVal's OSCLeash](https://github.com/Zenith
 ## Installation Steps
 
 ### 1. Module Setup
-1. Download the latest release from the releases page
-2. Place the DLL in your VRCOSC packages folder (typically `%AppData%/VRCOSC/Packages/local`)
-3. Enable the module in VRCOSC
-4. Configure the module settings in VRCOSC's UI
+1. Enable the module in VRCOSC
+2. Configure the module settings in VRCOSC's UI
 
 ### 2. Avatar Setup
 1. Import the prefab (`OSCLeash.prefab`) from releases into your Unity project
