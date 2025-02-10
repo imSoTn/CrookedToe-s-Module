@@ -167,16 +167,22 @@ public class OSCLeashModule : Module
     
     protected override Task<bool> OnModuleStart()
     {
-        if (GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled))
+        var verticalEnabled = GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled);
+        if (verticalEnabled)
         {
+            _ovrService.Enable();
             _ovrService.Initialize(GetOVRClient());
+        }
+        else
+        {
+            _ovrService.Disable();
         }
         return Task.FromResult(true);
     }
     
     protected override Task OnModuleStop()
     {
-        _ovrService.Cleanup();
+        _ovrService.Disable();
         return Task.CompletedTask;
     }
     
@@ -190,9 +196,19 @@ public class OSCLeashModule : Module
         if (ovrClient == null)
             return;
             
-        if (ovrClient.HasInitialised != _ovrService.IsInitialized)
+        // Handle OpenVR state changes
+        var verticalEnabled = GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled);
+        if (verticalEnabled)
         {
-            _ovrService.Initialize(ovrClient);
+            _ovrService.Enable();
+            if (!_ovrService.IsInitialized && ovrClient.HasInitialised)
+            {
+                _ovrService.Initialize(ovrClient);
+            }
+        }
+        else
+        {
+            _ovrService.Disable();
         }
         
         // Check if any leash parameters have been received
@@ -223,18 +239,12 @@ public class OSCLeashModule : Module
     private void UpdateVerticalMovementIfNeeded(float deltaTime)
     {
         bool isEnabled = GetSettingValue<bool>(OSCLeashSetting.VerticalMovementEnabled);
-        var ovrClient = GetOVRClient();
-        
-        if (!(isEnabled && ovrClient?.HasInitialised == true))
+        if (!isEnabled || !_ovrService.IsInitialized)
             return;
             
         // Sync grabbed state with OpenVRService
         _ovrService.IsGrabbed = _state.IsGrabbed;
         
-        var chaperoneSetup = OpenVR.ChaperoneSetup;
-        if (chaperoneSetup == null)
-            return;
-            
         try
         {
             float verticalDeadzone = GetSettingValue<float>(OSCLeashSetting.VerticalMovementDeadzone);
@@ -250,7 +260,6 @@ public class OSCLeashModule : Module
         catch (Exception ex)
         {
             Log($"Error updating vertical movement: {ex.Message}");
-            _ovrService.Reset();
         }
     }
     

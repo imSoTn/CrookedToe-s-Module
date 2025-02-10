@@ -22,60 +22,14 @@ public enum MovementStateType
 }
 
 /// <summary>
-/// A simple 3D vector implementation for movement calculations
+/// Configuration constants for movement smoothing
 /// </summary>
-public readonly struct Vector3
+internal static class MovementConfig
 {
-    /// <summary>X component of the vector</summary>
-    public readonly float X;
-    /// <summary>Y component of the vector</summary>
-    public readonly float Y;
-    /// <summary>Z component of the vector</summary>
-    public readonly float Z;
-    
-    public Vector3(float x, float y, float z)
-    {
-        X = x;
-        Y = y;
-        Z = z;
-    }
-    
-    public static Vector3 Zero => new(0, 0, 0);
-    public float Magnitude => MathF.Sqrt(X * X + Y * Y + Z * Z);
-    public Vector3 Normalized => Magnitude > 0 ? this / Magnitude : Zero;
-    
-    public float DistanceTo(Vector3 other)
-    {
-        float dx = X - other.X;
-        float dy = Y - other.Y;
-        float dz = Z - other.Z;
-        return MathF.Sqrt(dx * dx + dy * dy + dz * dz);
-    }
-    
-    public float Dot(Vector3 other) => X * other.X + Y * other.Y + Z * other.Z;
-    
-    public float AngleTo(Vector3 other)
-    {
-        float dot = Dot(other);
-        float mags = Magnitude * other.Magnitude;
-        return MathF.Acos(dot / mags) * (180f / MathF.PI);
-    }
-    
-    public static Vector3 operator +(Vector3 a, Vector3 b) => new(a.X + b.X, a.Y + b.Y, a.Z + b.Z);
-    public static Vector3 operator -(Vector3 a, Vector3 b) => new(a.X - b.X, a.Y - b.Y, a.Z - b.Z);
-    public static Vector3 operator *(Vector3 v, float s) => new(v.X * s, v.Y * s, v.Z * s);
-    public static Vector3 operator /(Vector3 v, float s) => new(v.X / s, v.Y / s, v.Z / s);
-    
-    public static bool operator ==(Vector3 a, Vector3 b) => 
-        a.X == b.X && a.Y == b.Y && a.Z == b.Z;
-    
-    public static bool operator !=(Vector3 a, Vector3 b) => !(a == b);
-    
-    public override bool Equals(object? obj) =>
-        obj is Vector3 other && this == other;
-    
-    public override int GetHashCode() =>
-        HashCode.Combine(X, Y, Z);
+    public const float HORIZONTAL_MIN_DELTA = 0.0002f;
+    public const float VERTICAL_MIN_DELTA = 0.0005f;
+    public const float SIGNIFICANT_CHANGE_THRESHOLD = 0.15f;
+    public const int DEFAULT_SMOOTHING_BUFFER_SIZE = 5;
 }
 
 /// <summary>
@@ -86,14 +40,23 @@ public class MovementSmoothingSystem
     private readonly Queue<float> buffer;
     private readonly int maxSize;
     private float lastValue;
+    private float[] weights;
+    private readonly bool isHorizontal;
     
-    private const float MIN_MOVEMENT_DELTA = 0.001f;
-    private const float SMOOTHING_WEIGHT_DECAY = 0.8f;
-    
-    public MovementSmoothingSystem(int size)
+    public MovementSmoothingSystem(int size, bool isHorizontal = false, float smoothing = 0.5f)
     {
-        maxSize = size;
-        buffer = new Queue<float>(size);
+        this.isHorizontal = isHorizontal;
+        maxSize = isHorizontal ? 4 : size;
+        buffer = new Queue<float>(maxSize);
+        
+        weights = new float[maxSize];
+        float weight = 1f;
+        float decay = smoothing;
+        for (int i = 0; i < maxSize; i++)
+        {
+            weights[i] = weight;
+            weight *= decay;
+        }
     }
     
     /// <summary>
@@ -101,25 +64,54 @@ public class MovementSmoothingSystem
     /// </summary>
     public float Smooth(float newValue)
     {
-        // Skip if change is too small
-        if (Math.Abs(newValue - lastValue) < MIN_MOVEMENT_DELTA)
+        float delta = newValue - lastValue;
+        float minDelta = isHorizontal ? MovementConfig.HORIZONTAL_MIN_DELTA : MovementConfig.VERTICAL_MIN_DELTA;
+        
+        if (isHorizontal && Math.Abs(delta) > MovementConfig.SIGNIFICANT_CHANGE_THRESHOLD)
+        {
+            lastValue = lastValue + delta * 0.6f;
+            buffer.Clear();
+            buffer.Enqueue(lastValue);
+            return lastValue;
+        }
+        
+        if (Math.Abs(delta) < minDelta)
             return lastValue;
             
-        // Add new value to buffer
         buffer.Enqueue(newValue);
         if (buffer.Count > maxSize)
             buffer.Dequeue();
-        
-        // Calculate weighted average
-        float sum = 0;
-        float weight = 1;
-        float totalWeight = 0;
-        
-        foreach (var value in buffer.Reverse())
+            
+        if (isHorizontal && buffer.Count > 1)
         {
-            sum += value * weight;
-            totalWeight += weight;
-            weight *= SMOOTHING_WEIGHT_DECAY;
+            var values = buffer.ToArray();
+            float weightedSum = 0;
+            float weightSum = 0;
+            
+            float changeRate = Math.Min(1.0f, Math.Abs(delta) * 2.0f);
+            float progressiveWeight = 1.0f;
+            
+            for (int idx = values.Length - 1; idx >= 0; idx--)
+            {
+                weightedSum += values[idx] * progressiveWeight;
+                weightSum += progressiveWeight;
+                progressiveWeight *= (1.0f - changeRate) * 0.5f + 0.5f;
+            }
+            
+            lastValue = weightedSum / weightSum;
+            return lastValue;
+        }
+        
+        float sum = 0;
+        float totalWeight = 0;
+        int i = buffer.Count - 1;
+        
+        foreach (var value in buffer)
+        {
+            if (i < 0) break;
+            sum += value * weights[i];
+            totalWeight += weights[i];
+            i--;
         }
         
         lastValue = sum / totalWeight;
@@ -143,24 +135,132 @@ public class MovementState
 {
     private readonly MovementSmoothingSystem horizontalSmoother;
     private readonly MovementSmoothingSystem verticalSmoother;
-    private const int SMOOTHING_BUFFER_SIZE = 8;
     private MovementStateType currentState = MovementStateType.Idle;
+    private Vector3 cachedMovementVector;
+    private bool movementVectorDirty = true;
+    private Vector3 lastMovement = Vector3.Zero;
+    private readonly float smoothing;
+    private readonly float verticalSmoothing;
     
-    public MovementState()
+    public MovementState(float smoothing = 0.5f, float verticalSmoothing = 0.65f)
     {
-        horizontalSmoother = new MovementSmoothingSystem(SMOOTHING_BUFFER_SIZE);
-        verticalSmoother = new MovementSmoothingSystem(SMOOTHING_BUFFER_SIZE);
+        this.smoothing = smoothing;
+        this.verticalSmoothing = verticalSmoothing;
+        horizontalSmoother = new MovementSmoothingSystem(3, true, smoothing);
+        verticalSmoother = new MovementSmoothingSystem(MovementConfig.DEFAULT_SMOOTHING_BUFFER_SIZE, false, verticalSmoothing);
     }
     
-    // Movement parameters
-    public bool IsGrabbed { get; set; }
-    public float Stretch { get; set; }
-    public float ZPositive { get; set; }
-    public float ZNegative { get; set; }
-    public float XPositive { get; set; }
-    public float XNegative { get; set; }
-    public float YPositive { get; set; }
-    public float YNegative { get; set; }
+    #region Movement Parameters
+    private bool _isGrabbed;
+    public bool IsGrabbed 
+    { 
+        get => _isGrabbed;
+        set 
+        {
+            if (_isGrabbed != value)
+            {
+                _isGrabbed = value;
+                movementVectorDirty = true;
+            }
+        }
+    }
+    
+    private float _stretch;
+    public float Stretch 
+    { 
+        get => _stretch;
+        set 
+        {
+            if (_stretch != value)
+            {
+                _stretch = value;
+                movementVectorDirty = true;
+            }
+        }
+    }
+    #endregion
+    
+    #region Movement Values
+    private float _zPositive, _zNegative, _xPositive, _xNegative, _yPositive, _yNegative;
+    
+    public float ZPositive 
+    { 
+        get => _zPositive;
+        set 
+        {
+            if (_zPositive != value)
+            {
+                _zPositive = value;
+                movementVectorDirty = true;
+            }
+        }
+    }
+    
+    public float ZNegative 
+    { 
+        get => _zNegative;
+        set 
+        {
+            if (_zNegative != value)
+            {
+                _zNegative = value;
+                movementVectorDirty = true;
+            }
+        }
+    }
+    
+    public float XPositive 
+    { 
+        get => _xPositive;
+        set 
+        {
+            if (_xPositive != value)
+            {
+                _xPositive = value;
+                movementVectorDirty = true;
+            }
+        }
+    }
+    
+    public float XNegative 
+    { 
+        get => _xNegative;
+        set 
+        {
+            if (_xNegative != value)
+            {
+                _xNegative = value;
+                movementVectorDirty = true;
+            }
+        }
+    }
+    
+    public float YPositive 
+    { 
+        get => _yPositive;
+        set 
+        {
+            if (_yPositive != value)
+            {
+                _yPositive = value;
+                movementVectorDirty = true;
+            }
+        }
+    }
+    
+    public float YNegative 
+    { 
+        get => _yNegative;
+        set 
+        {
+            if (_yNegative != value)
+            {
+                _yNegative = value;
+                movementVectorDirty = true;
+            }
+        }
+    }
+    #endregion
     
     public MovementStateType CurrentState => currentState;
     
@@ -169,11 +269,17 @@ public class MovementState
     /// </summary>
     public Vector3 GetMovementVector()
     {
-        return new Vector3(
+        if (!movementVectorDirty)
+            return cachedMovementVector;
+            
+        cachedMovementVector = new Vector3(
             XPositive - XNegative,
-            YNegative - YPositive,  // Inverted for proper up/down
+            YNegative - YPositive,
             ZPositive - ZNegative
         );
+        
+        movementVectorDirty = false;
+        return cachedMovementVector;
     }
     
     /// <summary>
@@ -187,19 +293,9 @@ public class MovementState
             return;
         }
         
-        // Use stretch against the deadzone settings
-        if (Stretch > runDeadzone)
-        {
-            currentState = MovementStateType.Running;
-        }
-        else if (Stretch > walkDeadzone)
-        {
-            currentState = MovementStateType.Walking;
-        }
-        else
-        {
-            currentState = MovementStateType.Idle;
-        }
+        currentState = Stretch > runDeadzone ? MovementStateType.Running :
+                      Stretch > walkDeadzone ? MovementStateType.Walking :
+                      MovementStateType.Idle;
     }
     
     /// <summary>
@@ -208,30 +304,80 @@ public class MovementState
     public Vector3 CalculateMovement(float strengthMultiplier, float upDownDeadzone, float upDownCompensation)
     {
         if (!IsGrabbed)
-            return Vector3.Zero;
-            
-        // Calculate base movement values
-        float outputMultiplier = Stretch * strengthMultiplier;
-        
-        // Calculate raw movement values with proper vertical handling
-        float vertical = verticalSmoother.Smooth((ZPositive - ZNegative) * outputMultiplier);
-        float horizontal = horizontalSmoother.Smooth((XPositive - XNegative) * outputMultiplier);
-        float verticalStretch = GetVerticalStretch();
-        
-        // If significant vertical movement, stop horizontal movement
-        if (verticalStretch >= upDownDeadzone)
         {
+            if (lastMovement != Vector3.Zero)
+            {
+                lastMovement = new Vector3(
+                    lastMovement.X * smoothing,
+                    lastMovement.Y * smoothing,
+                    lastMovement.Z * smoothing
+                );
+                
+                if (lastMovement.Magnitude < upDownDeadzone)
+                    lastMovement = Vector3.Zero;
+                    
+                return lastMovement;
+            }
             return Vector3.Zero;
         }
-        
-        // Apply vertical compensation to horizontal movement
-        float yModifier = upDownCompensation != 0 ? 
-            Math.Max(-1.0f, Math.Min(1.0f - (verticalStretch * upDownCompensation), 1.0f)) : 1.0f;
             
-        vertical = yModifier != 0 ? vertical / yModifier : vertical;
-        horizontal = yModifier != 0 ? horizontal / yModifier : horizontal;
+        float outputMultiplier = Stretch * strengthMultiplier;
+        float verticalStretch = GetVerticalStretch();
         
-        return new Vector3(horizontal, verticalStretch, vertical);
+        if (verticalStretch >= upDownDeadzone)
+        {
+            if (lastMovement != Vector3.Zero)
+            {
+                lastMovement = new Vector3(
+                    lastMovement.X * verticalSmoothing,
+                    verticalStretch,
+                    lastMovement.Z * verticalSmoothing
+                );
+                
+                if (Math.Abs(lastMovement.X) < upDownDeadzone && Math.Abs(lastMovement.Z) < upDownDeadzone)
+                    lastMovement = new Vector3(0, verticalStretch, 0);
+                    
+                return lastMovement;
+            }
+            return new Vector3(0, verticalStretch, 0);
+        }
+            
+        Vector3 movement = GetMovementVector();
+        
+        bool isChangingDirection = Math.Sign(movement.X) != Math.Sign(lastMovement.X) ||
+                                 Math.Sign(movement.Z) != Math.Sign(lastMovement.Z);
+        
+        float currentLerpFactor = isChangingDirection ? 
+            (1f - smoothing) * 1.5f : 
+            (1f - smoothing);
+        
+        if (upDownCompensation < upDownDeadzone)
+        {
+            Vector3 rawMovement = movement * outputMultiplier;
+            lastMovement = new Vector3(
+                lastMovement.X + (rawMovement.X - lastMovement.X) * currentLerpFactor,
+                rawMovement.Y,
+                lastMovement.Z + (rawMovement.Z - lastMovement.Z) * currentLerpFactor
+            );
+            return lastMovement;
+        }
+        
+        float yModifier = Math.Max(-1.0f, Math.Min(1.0f - (verticalStretch * upDownCompensation), 1.0f));
+        float horizontalMultiplier = outputMultiplier / (yModifier != 0 ? yModifier : 1.0f);
+        
+        Vector3 compensatedMovement = new Vector3(
+            movement.X * horizontalMultiplier,
+            verticalStretch,
+            movement.Z * horizontalMultiplier
+        );
+        
+        lastMovement = new Vector3(
+            lastMovement.X + (compensatedMovement.X - lastMovement.X) * currentLerpFactor,
+            compensatedMovement.Y,
+            lastMovement.Z + (compensatedMovement.Z - lastMovement.Z) * currentLerpFactor
+        );
+        
+        return lastMovement;
     }
     
     /// <summary>
@@ -242,8 +388,16 @@ public class MovementState
         horizontalSmoother.Clear();
         verticalSmoother.Clear();
         currentState = MovementStateType.Idle;
+        movementVectorDirty = true;
     }
     
-    public float GetVerticalStretch() => Math.Abs(YPositive - YNegative);
-    public float GetHorizontalStretch() => Math.Max(Math.Abs(XPositive - XNegative), Math.Abs(ZPositive - ZNegative));
+    public float GetVerticalStretch()
+    {
+        return Math.Abs(YPositive - YNegative);
+    }
+    
+    public float GetHorizontalStretch()
+    {
+        return Math.Max(Math.Abs(XPositive - XNegative), Math.Abs(ZPositive - ZNegative));
+    }
 } 
