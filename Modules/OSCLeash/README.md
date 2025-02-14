@@ -23,11 +23,7 @@ This is a VRCOSC module port of [ZenithVal's OSCLeash](https://github.com/Zenith
 - VRChat with OSC enabled
 
 ## Known Issues
-- Parameter names containing '+' are not received by the module due to an upstream SDK limitation. In your Unity parameters, rename:
-  - `X+` to `XPositive`
-  - `Y+` to `YPositive`
-  - `Z+` to `ZPositive`
-  This is required until the VRCOSC SDK parameter handling is updated.
+- when moving vertically with both gravity on and space drag moved, you will first be reset to the ground then pulled in the direction
 
 ## Installation Steps
 
@@ -36,12 +32,12 @@ This is a VRCOSC module port of [ZenithVal's OSCLeash](https://github.com/Zenith
 2. Configure the module settings in VRCOSC's UI
 
 ### 2. Avatar Setup
-1. Import the prefab (`OSCLeash.prefab`) from releases into your Unity project
+0. Remove any existing Physbones on the leash
+1. Import the package (`OSCLeash.prefab`) from releases into your Unity project
 2. Place the prefab at the root of your model (NOT as a child of armature)
-3. Configure the Physbone:
-   - Select `Leash Physbone` and assign its Root Transform to your leash's first bone
-   - Select `Compass` and assign the Position constraint source to the first bone
-   - Select `Aim Needle` (child of Compass) and assign the Aim constraint source to the last bone
+3. drag the first bone of your leash into the `Leash Start Bone` field
+4. Click Auto Setup
+5. Reset the OSC configuration on your avatar
 
 ### 3. Parameter Setup
 The module requires the following parameters to be set up in your avatar:
@@ -50,12 +46,12 @@ The module requires the following parameters to be set up in your avatar:
 |-----------|-------------|
 | `Leash_IsGrabbed` | Physbone grab state |
 | `Leash_Stretch` | Physbone stretch value |
-| `Leash_ZPositive` | Forward movement value |
-| `Leash_ZNegative` | Backward movement value |
-| `Leash_XPositive` | Right movement value |
-| `Leash_XNegative` | Left movement value |
-| `Leash_YPositive` | Up movement value |
-| `Leash_YNegative` | Down movement value |
+| `Leash_Z+` | Forward movement value |
+| `Leash_Z-` | Backward movement value |
+| `Leash_X+` | Right movement value |
+| `Leash_X-` | Left movement value |
+| `Leash_Y+` | Up movement value |
+| `Leash_Y-` | Down movement value |
 
 The leash direction is set in the module settings:
 - `North` - Front-facing leash (default)
@@ -79,6 +75,16 @@ The leash direction is set in the module settings:
 | Up/Down Compensation | Compensation for vertical movement | 1.0 |
 | Up/Down Deadzone | Vertical angle deadzone | 0.5 |
 
+## Vertical Movement Settings
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Enable Vertical Movement | Enables OpenVR height control | false |
+| Enable Gravity | Return to grab height when released | false |
+| Vertical Speed | Vertical movement speed multiplier (0.1-5.0) | 1.0 |
+| Vertical Deadzone | Minimum vertical pull needed (0-1) | 0.15 |
+| Vertical Smoothing | Smoothing factor for height changes (0-1) | 0.8 |
+| Vertical Angle | Required angle from horizontal (15-75°) | 45° |
+
 ## Turning Settings
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -87,11 +93,13 @@ The leash direction is set in the module settings:
 | Turning Deadzone | Minimum stretch for turning | 0.15 |
 | Turning Goal | Maximum turning angle in degrees | 90° |
 
+
 # Troubleshooting
 
 ## Common Issues
 - **No Movement Response**: 
   - Verify OSC is enabled in VRChat
+  - Manually delete the OSC avatar files from your computer
   - Check that VRCOSC is running
   - Verify parameter names match exactly (including case)
   - Check that the leash name in settings matches your parameter prefix
