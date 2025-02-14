@@ -34,6 +34,29 @@ public class OSCLeashModule : Module
         CreateTurningSettings();
         CreateVerticalSettings();
         CreateParameterRegistrations();
+
+        // Create logical groups for better organization
+        CreateGroup("Basic Movement", 
+            OSCLeashSetting.WalkDeadzone,
+            OSCLeashSetting.RunDeadzone,
+            OSCLeashSetting.StrengthMultiplier,
+            OSCLeashSetting.UpDownDeadzone,
+            OSCLeashSetting.UpDownCompensation,
+            OSCLeashSetting.LeashDirection);
+
+        CreateGroup("Turning Controls",
+            OSCLeashSetting.TurningEnabled,
+            OSCLeashSetting.TurningMultiplier,
+            OSCLeashSetting.TurningDeadzone,
+            OSCLeashSetting.TurningGoal);
+
+        CreateGroup("Vertical Movement",
+            OSCLeashSetting.VerticalMovementEnabled,
+            OSCLeashSetting.GrabBasedGravity,
+            OSCLeashSetting.VerticalMovementMultiplier,
+            OSCLeashSetting.VerticalMovementDeadzone,
+            OSCLeashSetting.VerticalMovementSmoothing,
+            OSCLeashSetting.VerticalHorizontalCompensation);
     }
 
     private void CreateMovementSettings()
@@ -68,8 +91,8 @@ public class OSCLeashModule : Module
     {
         CreateToggle(OSCLeashSetting.VerticalMovementEnabled, "Enable Vertical Movement", 
             "Enables OpenVR height control.", false);
-        CreateToggle(OSCLeashSetting.GrabBasedGravity, "Grab-Based Gravity",
-            "Only apply gravity during/after grab until rest.", false);
+        CreateToggle(OSCLeashSetting.GrabBasedGravity, "Enable Gravity",
+            "Return to grab height when released.", false);
         CreateSlider(OSCLeashSetting.VerticalMovementMultiplier, "Vertical Speed", 
             "Vertical movement speed multiplier (0.1-5.0).", 1.0f, 0.1f, 5.0f);
         CreateSlider(OSCLeashSetting.VerticalMovementDeadzone, "Vertical Deadzone", 
@@ -106,7 +129,7 @@ public class OSCLeashModule : Module
         if (verticalEnabled)
         {
             _ovrService.Enable();
-            _ovrService.SetGrabBasedGravity(GetSettingValue<bool>(OSCLeashSetting.GrabBasedGravity));
+            _ovrService.SetGravityEnabled(GetSettingValue<bool>(OSCLeashSetting.GrabBasedGravity));
             _ovrService.Initialize(GetOVRClient());
         }
         return Task.FromResult(true);
@@ -152,7 +175,7 @@ public class OSCLeashModule : Module
         try
         {
             _ovrService.IsGrabbed = _state.IsGrabbed;
-            _ovrService.SetGrabBasedGravity(GetSettingValue<bool>(OSCLeashSetting.GrabBasedGravity));
+            _ovrService.SetGravityEnabled(GetSettingValue<bool>(OSCLeashSetting.GrabBasedGravity));
 
             float newOffset = _ovrService.UpdateVerticalMovement(
                 DELTA_TIME,
