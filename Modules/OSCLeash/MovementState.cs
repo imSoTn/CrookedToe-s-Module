@@ -18,7 +18,9 @@ public enum MovementStateType
     /// <summary>Vertical movement</summary>
     VerticalMovement,
     /// <summary>Turning movement</summary>
-    Turning
+    Turning,
+    /// <summary>Returning to original position</summary>
+    ReturnToOrigin
 }
 
 /// <summary>
@@ -135,10 +137,12 @@ public class MovementState
 {
     private readonly MovementSmoothingSystem horizontalSmoother;
     private readonly MovementSmoothingSystem verticalSmoother;
-    private MovementStateType currentState = MovementStateType.Idle;
     private Vector3 cachedMovementVector;
     private bool movementVectorDirty = true;
     private Vector3 lastMovement = Vector3.Zero;
+    private Vector3 originalPosition = Vector3.Zero;
+    private bool hasStoredOriginalPosition;
+    private const float RETURN_COMPLETION_THRESHOLD = 0.01f;
     private readonly float smoothing;
     private readonly float verticalSmoothing;
     
@@ -149,124 +153,64 @@ public class MovementState
         horizontalSmoother = new MovementSmoothingSystem(3, true, smoothing);
         verticalSmoother = new MovementSmoothingSystem(MovementConfig.DEFAULT_SMOOTHING_BUFFER_SIZE, false, verticalSmoothing);
     }
-    
-    #region Movement Parameters
+
+    #region Properties with Change Detection
     private bool _isGrabbed;
+    private float _stretch;
+    private float _zPositive, _zNegative, _xPositive, _xNegative, _yPositive, _yNegative;
+
     public bool IsGrabbed 
     { 
         get => _isGrabbed;
-        set 
-        {
-            if (_isGrabbed != value)
-            {
-                _isGrabbed = value;
-                movementVectorDirty = true;
-            }
-        }
+        set { if (_isGrabbed != value) { _isGrabbed = value; movementVectorDirty = true; } }
     }
     
-    private float _stretch;
     public float Stretch 
     { 
         get => _stretch;
-        set 
-        {
-            if (_stretch != value)
-            {
-                _stretch = value;
-                movementVectorDirty = true;
-            }
-        }
+        set { if (_stretch != value) { _stretch = value; movementVectorDirty = true; } }
     }
-    #endregion
-    
-    #region Movement Values
-    private float _zPositive, _zNegative, _xPositive, _xNegative, _yPositive, _yNegative;
     
     public float ZPositive 
     { 
         get => _zPositive;
-        set 
-        {
-            if (_zPositive != value)
-            {
-                _zPositive = value;
-                movementVectorDirty = true;
-            }
-        }
+        set { if (_zPositive != value) { _zPositive = value; movementVectorDirty = true; } }
     }
     
     public float ZNegative 
     { 
         get => _zNegative;
-        set 
-        {
-            if (_zNegative != value)
-            {
-                _zNegative = value;
-                movementVectorDirty = true;
-            }
-        }
+        set { if (_zNegative != value) { _zNegative = value; movementVectorDirty = true; } }
     }
     
     public float XPositive 
     { 
         get => _xPositive;
-        set 
-        {
-            if (_xPositive != value)
-            {
-                _xPositive = value;
-                movementVectorDirty = true;
-            }
-        }
+        set { if (_xPositive != value) { _xPositive = value; movementVectorDirty = true; } }
     }
     
     public float XNegative 
     { 
         get => _xNegative;
-        set 
-        {
-            if (_xNegative != value)
-            {
-                _xNegative = value;
-                movementVectorDirty = true;
-            }
-        }
+        set { if (_xNegative != value) { _xNegative = value; movementVectorDirty = true; } }
     }
     
     public float YPositive 
     { 
         get => _yPositive;
-        set 
-        {
-            if (_yPositive != value)
-            {
-                _yPositive = value;
-                movementVectorDirty = true;
-            }
-        }
+        set { if (_yPositive != value) { _yPositive = value; movementVectorDirty = true; } }
     }
     
     public float YNegative 
     { 
         get => _yNegative;
-        set 
-        {
-            if (_yNegative != value)
-            {
-                _yNegative = value;
-                movementVectorDirty = true;
-            }
-        }
+        set { if (_yNegative != value) { _yNegative = value; movementVectorDirty = true; } }
     }
     #endregion
-    
-    public MovementStateType CurrentState => currentState;
-    
-    /// <summary>
-    /// Gets the raw movement vector without any modifiers or smoothing
-    /// </summary>
+
+    public MovementStateType CurrentState { get; private set; } = MovementStateType.Idle;
+    public bool IsReturningToOrigin => CurrentState == MovementStateType.ReturnToOrigin;
+
     public Vector3 GetMovementVector()
     {
         if (!movementVectorDirty)
@@ -281,49 +225,47 @@ public class MovementState
         movementVectorDirty = false;
         return cachedMovementVector;
     }
-    
-    /// <summary>
-    /// Updates the movement state based on current values and thresholds
-    /// </summary>
+
     public void UpdateState(float walkDeadzone, float runDeadzone)
     {
         if (!IsGrabbed)
         {
-            currentState = MovementStateType.Idle;
+            if (!hasStoredOriginalPosition)
+            {
+                originalPosition = lastMovement;
+                hasStoredOriginalPosition = true;
+            }
+            
+            CurrentState = lastMovement.DistanceTo(originalPosition) > RETURN_COMPLETION_THRESHOLD
+                ? MovementStateType.ReturnToOrigin
+                : MovementStateType.Idle;
+
+            if (CurrentState == MovementStateType.Idle)
+                hasStoredOriginalPosition = false;
+
             return;
         }
         
-        currentState = Stretch > runDeadzone ? MovementStateType.Running :
+        hasStoredOriginalPosition = false;
+        CurrentState = Stretch > runDeadzone ? MovementStateType.Running :
                       Stretch > walkDeadzone ? MovementStateType.Walking :
                       MovementStateType.Idle;
     }
-    
-    /// <summary>
-    /// Calculates the movement vector with all modifiers applied
-    /// </summary>
+
     public Vector3 CalculateMovement(float strengthMultiplier, float upDownDeadzone, float upDownCompensation)
     {
         if (!IsGrabbed)
         {
-            if (lastMovement != Vector3.Zero)
-            {
-                lastMovement = new Vector3(
-                    lastMovement.X * smoothing,
-                    lastMovement.Y * smoothing,
-                    lastMovement.Z * smoothing
-                );
-                
-                if (lastMovement.Magnitude < upDownDeadzone)
-                    lastMovement = Vector3.Zero;
-                    
-                return lastMovement;
-            }
-            return Vector3.Zero;
+            if (lastMovement == Vector3.Zero)
+                return Vector3.Zero;
+
+            lastMovement *= smoothing;
+            if (lastMovement.Magnitude < upDownDeadzone)
+                lastMovement = Vector3.Zero;
+            return lastMovement;
         }
-            
-        float outputMultiplier = Stretch * strengthMultiplier;
-        float verticalStretch = GetVerticalStretch();
-        
+
+        float verticalStretch = Math.Abs(YPositive - YNegative);
         if (verticalStretch >= upDownDeadzone)
         {
             if (lastMovement != Vector3.Zero)
@@ -333,71 +275,72 @@ public class MovementState
                     verticalStretch,
                     lastMovement.Z * verticalSmoothing
                 );
-                
+
                 if (Math.Abs(lastMovement.X) < upDownDeadzone && Math.Abs(lastMovement.Z) < upDownDeadzone)
                     lastMovement = new Vector3(0, verticalStretch, 0);
-                    
-                return lastMovement;
             }
-            return new Vector3(0, verticalStretch, 0);
+            else
+            {
+                lastMovement = new Vector3(0, verticalStretch, 0);
+            }
+            return lastMovement;
         }
-            
+
         Vector3 movement = GetMovementVector();
-        
-        bool isChangingDirection = Math.Sign(movement.X) != Math.Sign(lastMovement.X) ||
-                                 Math.Sign(movement.Z) != Math.Sign(lastMovement.Z);
-        
-        float currentLerpFactor = isChangingDirection ? 
-            (1f - smoothing) * 1.5f : 
-            (1f - smoothing);
-        
+        float outputMultiplier = Stretch * strengthMultiplier;
+
         if (upDownCompensation < upDownDeadzone)
         {
             Vector3 rawMovement = movement * outputMultiplier;
-            lastMovement = new Vector3(
-                lastMovement.X + (rawMovement.X - lastMovement.X) * currentLerpFactor,
-                rawMovement.Y,
-                lastMovement.Z + (rawMovement.Z - lastMovement.Z) * currentLerpFactor
-            );
+            lastMovement = InterpolateMovement(rawMovement);
             return lastMovement;
         }
-        
-        float yModifier = Math.Max(-1.0f, Math.Min(1.0f - (verticalStretch * upDownCompensation), 1.0f));
+
+        float yModifier = Math.Clamp(1.0f - (verticalStretch * upDownCompensation), -1.0f, 1.0f);
         float horizontalMultiplier = outputMultiplier / (yModifier != 0 ? yModifier : 1.0f);
-        
+
         Vector3 compensatedMovement = new Vector3(
             movement.X * horizontalMultiplier,
             verticalStretch,
             movement.Z * horizontalMultiplier
         );
-        
-        lastMovement = new Vector3(
-            lastMovement.X + (compensatedMovement.X - lastMovement.X) * currentLerpFactor,
-            compensatedMovement.Y,
-            lastMovement.Z + (compensatedMovement.Z - lastMovement.Z) * currentLerpFactor
-        );
-        
+
+        lastMovement = InterpolateMovement(compensatedMovement);
         return lastMovement;
     }
-    
-    /// <summary>
-    /// Resets all movement smoothing
-    /// </summary>
+
+    private Vector3 InterpolateMovement(Vector3 targetMovement)
+    {
+        bool isChangingDirection = Math.Sign(targetMovement.X) != Math.Sign(lastMovement.X) ||
+                                 Math.Sign(targetMovement.Z) != Math.Sign(lastMovement.Z);
+
+        float lerpFactor = isChangingDirection ? (1f - smoothing) * 1.5f : (1f - smoothing);
+
+        return new Vector3(
+            lastMovement.X + (targetMovement.X - lastMovement.X) * lerpFactor,
+            targetMovement.Y,
+            lastMovement.Z + (targetMovement.Z - lastMovement.Z) * lerpFactor
+        );
+    }
+
     public void Reset()
     {
         horizontalSmoother.Clear();
         verticalSmoother.Clear();
-        currentState = MovementStateType.Idle;
+        CurrentState = MovementStateType.Idle;
         movementVectorDirty = true;
+        lastMovement = Vector3.Zero;
+        hasStoredOriginalPosition = false;
     }
-    
-    public float GetVerticalStretch()
+
+    public Vector3 GetReturnToOriginVector()
     {
-        return Math.Abs(YPositive - YNegative);
-    }
-    
-    public float GetHorizontalStretch()
-    {
-        return Math.Max(Math.Abs(XPositive - XNegative), Math.Abs(ZPositive - ZNegative));
+        if (!IsReturningToOrigin)
+            return Vector3.Zero;
+
+        Vector3 direction = originalPosition - lastMovement;
+        float magnitude = direction.Magnitude;
+        
+        return magnitude < float.Epsilon ? Vector3.Zero : direction / magnitude;
     }
 } 

@@ -29,14 +29,14 @@ public class OpenVRService : IDisposable
     private bool isInitialized;
     private bool isEnabled;
     private float currentVerticalOffset;
-    private float targetVerticalOffset;
     private float verticalVelocity;
-    private float grabTimer;
     private ETrackingUniverseOrigin originalTrackingOrigin;
     private HmdMatrix34_t standingZeroPose;
-    private float lastAppliedOffset;
     private bool isDisposed;
     private OVRClient? ovrClient;
+    private bool gravityEnabled;
+    private float referenceHeight;
+    public bool IsGrabbed { get; set; }
 
     public OpenVRService(Action<string> logCallback)
     {
@@ -44,32 +44,18 @@ public class OpenVRService : IDisposable
         standingZeroPose = new HmdMatrix34_t();
     }
 
-    /// <summary>
-    /// Initializes the OpenVR service with the provided client
-    /// </summary>
     public bool Initialize(OVRClient? client)
     {
         ThrowIfDisposed();
         
-        if (!isEnabled)
+        if (!isEnabled || client?.HasInitialised != true)
         {
             Reset();
             return false;
         }
-
-        if (client == null || !client.HasInitialised)
-        {
-            logCallback("OpenVR is not initialized. Vertical movement will be disabled until OpenVR is available.");
-            Reset();
-            return false;
-        }
-
-        ovrClient = client;
 
         if (isInitialized)
-        {
             return true;
-        }
 
         try
         {
@@ -78,16 +64,16 @@ public class OpenVRService : IDisposable
             
             if (compositor == null || chaperoneSetup == null)
             {
-                logCallback("Failed to initialize OpenVR: Required components not available");
                 Reset();
                 return false;
             }
 
+            ovrClient = client;
             originalTrackingOrigin = compositor.GetTrackingSpace();
             chaperoneSetup.GetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
-            currentVerticalOffset = standingZeroPose.m7;
+            referenceHeight = standingZeroPose.m7;
+            currentVerticalOffset = 0;
             isInitialized = true;
-            UpdateOffset();
             return true;
         }
         catch (Exception ex)
@@ -98,90 +84,41 @@ public class OpenVRService : IDisposable
         }
     }
 
-    public void Enable()
+    public void UpdateReferenceHeight()
     {
-        isEnabled = true;
-        if (!isInitialized)
+        if (ovrClient?.HasInitialised != true)
+            return;
+
+        var chaperoneSetup = OpenVR.ChaperoneSetup;
+        if (chaperoneSetup != null)
         {
-            Reset();
+            chaperoneSetup.GetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
+            referenceHeight = standingZeroPose.m7;
+            currentVerticalOffset = 0;
+            verticalVelocity = 0;
+            logCallback($"Updated reference height to {referenceHeight:F3}");
         }
     }
 
-    public void Disable()
+    private float GetOffsetFromReference(float absoluteHeight) => absoluteHeight - referenceHeight;
+    private float GetAbsoluteFromOffset(float offset) => referenceHeight + offset;
+
+    private bool CanUpdatePlayspace()
     {
-        isEnabled = false;
-        Reset();
+        if (!isEnabled || !isInitialized || ovrClient?.HasInitialised != true)
+            return false;
+
+        // Always allow updates when grabbed or when gravity is pulling us back
+        return IsGrabbed || (gravityEnabled && 
+               (Math.Abs(currentVerticalOffset) > OpenVRConfig.STOP_THRESHOLD || 
+                Math.Abs(verticalVelocity) > OpenVRConfig.VELOCITY_STOP_THRESHOLD));
     }
 
-    /// <summary>
-    /// Resets the service state without releasing resources
-    /// </summary>
-    public void Reset()
-    {
-        ThrowIfDisposed();
-        
-        ResetOpenVRState();
-        ResetInternalState();
-    }
-
-    private void ResetOpenVRState()
-    {
-        if (isInitialized && ovrClient?.HasInitialised == true)
-        {
-            try
-            {
-                var compositor = OpenVR.Compositor;
-                var chaperoneSetup = OpenVR.ChaperoneSetup;
-                
-                if (compositor != null)
-                {
-                    compositor.SetTrackingSpace(originalTrackingOrigin);
-                }
-                
-                if (chaperoneSetup != null)
-                {
-                    standingZeroPose.m7 = 0;
-                    chaperoneSetup.SetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
-                    chaperoneSetup.CommitWorkingCopy(EChaperoneConfigFile.Live);
-                }
-            }
-            catch (Exception ex)
-            {
-                logCallback($"Error resetting OpenVR state: {ex.Message}");
-            }
-        }
-    }
-
-    private void ResetInternalState()
-    {
-        isInitialized = false;
-        verticalVelocity = 0;
-        grabTimer = 0;
-        currentVerticalOffset = 0;
-        lastAppliedOffset = 0;
-    }
-
-    private void UpdateOffset()
-    {
-        if (ovrClient?.HasInitialised == true)
-        {
-            var chaperoneSetup = OpenVR.ChaperoneSetup;
-            if (chaperoneSetup != null)
-            {
-                chaperoneSetup.GetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
-                targetVerticalOffset = standingZeroPose.m7;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Applies a vertical offset to the player's position
-    /// </summary>
     public void ApplyOffset(float newOffset)
     {
         ThrowIfDisposed();
         
-        if (!isEnabled || !isInitialized || ovrClient?.HasInitialised != true)
+        if (!CanUpdatePlayspace())
             return;
 
         try
@@ -191,8 +128,8 @@ public class OpenVRService : IDisposable
                 return;
 
             currentVerticalOffset = newOffset;
-            standingZeroPose.m7 = newOffset;
-            lastAppliedOffset = newOffset;
+            float absoluteHeight = GetAbsoluteFromOffset(newOffset);
+            standingZeroPose.m7 = absoluteHeight;
 
             chaperoneSetup.SetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
             chaperoneSetup.CommitWorkingCopy(EChaperoneConfigFile.Live);
@@ -204,9 +141,6 @@ public class OpenVRService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Updates vertical movement based on the current state and parameters
-    /// </summary>
     public float UpdateVerticalMovement(float deltaTime, MovementState state, float verticalDeadzone,
         float angleThreshold, float verticalMultiplier, float smoothing)
     {
@@ -215,48 +149,142 @@ public class OpenVRService : IDisposable
         if (!isInitialized || !isEnabled)
             return currentVerticalOffset;
 
-        // If not grabbed, start falling
-        if (!state.IsGrabbed)
+        // Handle grab state changes
+        if (state.IsGrabbed != IsGrabbed)
         {
-            if (IsGrabbed)  // Just released
+            if (state.IsGrabbed)
             {
-                verticalVelocity = 0f;
-                IsGrabbed = false;
-                grabTimer = 0f;
+                // Just grabbed - update reference and reset state
+                UpdateReferenceHeight();
+                logCallback("Grabbed - Updated reference height");
             }
+            else
+            {
+                // Just released - maintain current offset from reference
+                logCallback("Released - Maintaining offset");
+                verticalVelocity = 0f;
+            }
+            IsGrabbed = state.IsGrabbed;
+        }
+
+        if (IsGrabbed)
+        {
+            // Handle grabbed movement
+            float stepSize = CalculateStepSize(state, verticalDeadzone, angleThreshold);
+            if (Math.Abs(stepSize) >= OpenVRConfig.MOVEMENT_DEADZONE)
+            {
+                return ApplyMovement(deltaTime, stepSize, verticalMultiplier, smoothing);
+            }
+            return currentVerticalOffset;
+        }
+        else if (gravityEnabled)
+        {
+            // Apply gravity if enabled
             return ApplyGravity(deltaTime);
         }
 
-        // Handle initial grab
-        if (!IsGrabbed)
-        {
-            // Initial grab setup
-            grabTimer = 0f;
-            verticalVelocity = 0f;
-            UpdateOffset();
-            IsGrabbed = true;
-            return currentVerticalOffset;
-        }
+        return currentVerticalOffset;
+    }
 
-        // Update grab timer
-        grabTimer += deltaTime;
-
-        // During initial grab delay, ignore vertical movement completely
-        if (grabTimer < OpenVRConfig.GRAB_DELAY)
+    private float ApplyGravity(float deltaTime)
+    {
+        // If we're very close to reference height and moving slowly, stop
+        if (Math.Abs(currentVerticalOffset) < OpenVRConfig.STOP_THRESHOLD && 
+            Math.Abs(verticalVelocity) < OpenVRConfig.VELOCITY_STOP_THRESHOLD)
         {
             verticalVelocity = 0f;
-            return currentVerticalOffset;
+            ApplyOffset(0f);  // Return to reference height
+            return 0f;
         }
 
-        // After delay, calculate movement
-        float stepSize = CalculateStepSize(state, verticalDeadzone, angleThreshold);
-        if (Math.Abs(stepSize) < OpenVRConfig.MOVEMENT_DEADZONE)
+        // Apply gravity towards reference height
+        float gravityDirection = -Math.Sign(currentVerticalOffset);
+        verticalVelocity += OpenVRConfig.GRAVITY * gravityDirection * deltaTime;
+        
+        // Clamp velocity
+        verticalVelocity = gravityDirection > 0
+            ? Math.Min(verticalVelocity, OpenVRConfig.TERMINAL_VELOCITY)
+            : Math.Max(verticalVelocity, -OpenVRConfig.TERMINAL_VELOCITY);
+
+        float newOffset = currentVerticalOffset + verticalVelocity * deltaTime;
+
+        // If we've crossed reference height, stop at reference
+        if ((currentVerticalOffset > 0f && newOffset < 0f) ||
+            (currentVerticalOffset < 0f && newOffset > 0f))
         {
             verticalVelocity = 0f;
-            return currentVerticalOffset;
+            ApplyOffset(0f);
+            return 0f;
         }
 
-        return ApplyMovement(deltaTime, stepSize, verticalMultiplier, smoothing);
+        ApplyOffset(newOffset);
+        return newOffset;
+    }
+
+    private float ApplyMovement(float deltaTime, float stepSize, float verticalMultiplier, float smoothing)
+    {
+        float targetVelocity = stepSize * verticalMultiplier;
+        verticalVelocity = verticalVelocity * smoothing + targetVelocity * (1f - smoothing);
+        
+        float newOffset = currentVerticalOffset + verticalVelocity * deltaTime;
+        float clampedOffset = Math.Clamp(newOffset, -OpenVRConfig.MAX_VERTICAL_OFFSET, OpenVRConfig.MAX_VERTICAL_OFFSET);
+        
+        ApplyOffset(clampedOffset);
+        return clampedOffset;
+    }
+
+    public void Enable() => isEnabled = true;
+
+    public void Disable()
+    {
+        isEnabled = false;
+        Reset();
+    }
+
+    private void Reset()
+    {
+        if (isInitialized && ovrClient?.HasInitialised == true)
+        {
+            try
+            {
+                var compositor = OpenVR.Compositor;
+                var chaperoneSetup = OpenVR.ChaperoneSetup;
+                
+                if (compositor != null)
+                    compositor.SetTrackingSpace(originalTrackingOrigin);
+                
+                if (chaperoneSetup != null)
+                {
+                    standingZeroPose.m7 = referenceHeight;  // Reset to reference height instead of 0
+                    chaperoneSetup.SetWorkingStandingZeroPoseToRawTrackingPose(ref standingZeroPose);
+                    chaperoneSetup.CommitWorkingCopy(EChaperoneConfigFile.Live);
+                }
+            }
+            catch (Exception ex)
+            {
+                logCallback($"Error resetting OpenVR state: {ex.Message}");
+            }
+        }
+
+        isInitialized = false;
+        verticalVelocity = 0;
+        currentVerticalOffset = 0;
+        ovrClient = null;
+    }
+
+    public void SetGravityEnabled(bool enabled)
+    {
+        if (gravityEnabled == enabled)
+            return;
+
+        gravityEnabled = enabled;
+        logCallback($"Gravity {(enabled ? "enabled" : "disabled")}");
+        
+        if (!enabled)
+        {
+            // When disabling gravity, keep current position but reset velocity
+            verticalVelocity = 0f;
+        }
     }
 
     private float CalculateStepSize(MovementState state, float verticalDeadzone, float angleThreshold)
@@ -274,62 +302,6 @@ public class OpenVRService : IDisposable
             return 0f;
 
         return movement.Y;
-    }
-
-    private float ApplyGravity(float deltaTime)
-    {
-        // If we're very close to the original position and moving slowly, stop
-        if (Math.Abs(currentVerticalOffset) < OpenVRConfig.STOP_THRESHOLD && 
-            Math.Abs(verticalVelocity) < OpenVRConfig.VELOCITY_STOP_THRESHOLD)
-        {
-            verticalVelocity = 0f;
-            ApplyOffset(0f);
-            return 0f;
-        }
-
-        // Apply gravity towards original position
-        float gravityDirection = -Math.Sign(currentVerticalOffset);
-        verticalVelocity += OpenVRConfig.GRAVITY * gravityDirection * deltaTime;
-        
-        // Clamp velocity based on direction
-        if (gravityDirection > 0)
-        {
-            verticalVelocity = Math.Min(verticalVelocity, OpenVRConfig.TERMINAL_VELOCITY);
-        }
-        else
-        {
-            verticalVelocity = Math.Max(verticalVelocity, -OpenVRConfig.TERMINAL_VELOCITY);
-        }
-
-        float newOffset = currentVerticalOffset + verticalVelocity * deltaTime;
-
-        // If we've crossed the original position, stop at 0
-        if ((currentVerticalOffset > 0f && newOffset < 0f) ||
-            (currentVerticalOffset < 0f && newOffset > 0f))
-        {
-            verticalVelocity = 0f;
-            ApplyOffset(0f);
-            return 0f;
-        }
-
-        ApplyOffset(newOffset);
-        return newOffset;
-    }
-
-    private float ApplyMovement(float deltaTime, float stepSize, float verticalMultiplier, float smoothing)
-    {
-        // Calculate target velocity based on input
-        float targetVelocity = stepSize * verticalMultiplier;
-        
-        // Smoothly interpolate to target velocity using the smoothing parameter
-        verticalVelocity = verticalVelocity * smoothing + targetVelocity * (1f - smoothing);
-        
-        // Update position with velocity
-        float newOffset = currentVerticalOffset + verticalVelocity * deltaTime;
-        float clampedOffset = Math.Clamp(newOffset, -OpenVRConfig.MAX_VERTICAL_OFFSET, OpenVRConfig.MAX_VERTICAL_OFFSET);
-        
-        ApplyOffset(clampedOffset);
-        return clampedOffset;
     }
 
     private void ThrowIfDisposed()
@@ -368,5 +340,4 @@ public class OpenVRService : IDisposable
 
     public bool IsInitialized => isInitialized;
     public float CurrentVerticalOffset => currentVerticalOffset;
-    public bool IsGrabbed { get; set; }
 } 

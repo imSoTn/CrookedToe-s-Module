@@ -155,5 +155,12 @@ public enum OSCLeashSetting
     /// - Higher angles (75°): Must pull more vertically
     /// Controls how "vertical" the pull must be to change height.
     /// </summary>
-    VerticalHorizontalCompensation
+    VerticalHorizontalCompensation,
+    
+    /// <summary>
+    /// When enabled, gravity is only active after the leash has been grabbed and released.
+    /// Gravity remains disabled until the next grab-release cycle.
+    /// This creates a more controlled vertical movement experience.
+    /// </summary>
+    GrabBasedGravity
 } 
