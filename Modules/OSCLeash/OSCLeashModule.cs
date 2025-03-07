@@ -109,17 +109,17 @@ public class OSCLeashModule : Module
             ParameterMode.Read, "Leash Grabbed", "Whether the leash is being held");
         RegisterParameter<float>(OSCLeashParameter.Stretch, "Leash_Stretch", 
             ParameterMode.Read, "Leash Stretch", "How far the leash is stretched");
-        RegisterParameter<float>(OSCLeashParameter.ZPositive, "Leash_ZPositive", 
+        RegisterParameter<float>(OSCLeashParameter.ZPositive, "Leash_Z+", 
             ParameterMode.Read, "Forward Pull", "Forward movement value", false);
-        RegisterParameter<float>(OSCLeashParameter.ZNegative, "Leash_ZNegative", 
+        RegisterParameter<float>(OSCLeashParameter.ZNegative, "Leash_Z-", 
             ParameterMode.Read, "Backward Pull", "Backward movement value", false);
-        RegisterParameter<float>(OSCLeashParameter.XPositive, "Leash_XPositive", 
+        RegisterParameter<float>(OSCLeashParameter.XPositive, "Leash_X+", 
             ParameterMode.Read, "Right Pull", "Rightward movement value", false);
-        RegisterParameter<float>(OSCLeashParameter.XNegative, "Leash_XNegative", 
+        RegisterParameter<float>(OSCLeashParameter.XNegative, "Leash_X-", 
             ParameterMode.Read, "Left Pull", "Leftward movement value", false);
-        RegisterParameter<float>(OSCLeashParameter.YPositive, "Leash_YPositive", 
+        RegisterParameter<float>(OSCLeashParameter.YPositive, "Leash_Y+", 
             ParameterMode.Read, "Upward Pull", "Upward movement value", false);
-        RegisterParameter<float>(OSCLeashParameter.YNegative, "Leash_YNegative", 
+        RegisterParameter<float>(OSCLeashParameter.YNegative, "Leash_Y-", 
             ParameterMode.Read, "Downward Pull", "Downward movement value", false);
     }
 
