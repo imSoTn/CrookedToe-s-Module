@@ -9,6 +9,8 @@ using VRCOSC.App.SDK.Modules.Attributes.Settings;
 using VRCOSC.App.SDK.Parameters;
 using VRCOSC.App.SDK.VRChat;
 using CrookedToe.Modules.OSCAudioReaction.AudioProcessing;
+using CrookedToe.Modules.OSCAudioReaction.UI;
+using Xceed.Wpf.Toolkit.PropertyGrid.Attributes;
 
 namespace CrookedToe.Modules.OSCAudioReaction;
 
@@ -18,11 +20,9 @@ namespace CrookedToe.Modules.OSCAudioReaction;
 public class OSCAudioDirectionModule : Module
 {
     private const int PROCESSING_LOCK_TIMEOUT_MS = 5;
-    
     private readonly IAudioFactory _audioFactory;
     private readonly SemaphoreSlim _processingLock = new(1, 1);
     private readonly object _configLock = new();
-    
     private IAudioProcessor? _audioProcessor;
     private IAudioDeviceManager? _deviceManager;
     private IAudioConfiguration _config;
@@ -32,7 +32,8 @@ public class OSCAudioDirectionModule : Module
     private float _currentVolume;
     private float _currentDirection;
     private volatile bool _configurationChanged;
-
+    private string SelectedAudioSource;
+    private List<string> avalableDevices;
     private enum AudioParameter 
     { 
         AudioDirection, 
@@ -50,6 +51,7 @@ public class OSCAudioDirectionModule : Module
 
     private enum AudioSetting 
     { 
+        DeviceID,
         Gain, 
         EnableAGC, 
         Smoothing, 
@@ -84,8 +86,13 @@ public class OSCAudioDirectionModule : Module
         _config = new AudioConfiguration();
     }
 
+    public enum CrookedToeSettings{
+        SelectedAudioSource
+    }
+
     protected override void OnPreLoad()
     {
+#region basic settings
         // Basic settings
         CreateDropdown(AudioSetting.PresetSelection, "Avatar Preset", 
             "Select a preset for your avatar's audio reactions. Each preset has optimized settings for different use cases.", 
@@ -143,7 +150,19 @@ public class OSCAudioDirectionModule : Module
         
         CreateToggle(AudioSetting.EnableBrilliance, "Brilliance (6-20kHz)", 
             "Air frequencies: cymbals, sibilance, sparkle", false);
-
+#endregion
+#region custom settings
+        CreateCustomSetting(
+            CrookedToeSettings.SelectedAudioSource,
+            new StringModuleSetting(
+                "AudioSource",
+                "Select ur fkn Audio Source!",
+                typeof(SourceSettingView),
+                "Default"
+            )
+        );
+#endregion
+#region params
         // Main parameters
         RegisterParameter<float>(AudioParameter.AudioDirection, "audio_direction", 
             ParameterMode.Write, "Audio Direction", "0=left, 0.5=center, 1=right");
@@ -175,8 +194,12 @@ public class OSCAudioDirectionModule : Module
         
         RegisterParameter<float>(AudioParameter.BrillianceVolume, "audio_brilliance", 
             ParameterMode.Write, "Brilliance Volume (6-20kHz)", "Air frequencies: cymbals, sibilance, sparkle");
+#endregion
+#region groups
 
         // Create groups
+        CreateGroup("AudioSources",
+            CrookedToeSettings.SelectedAudioSource);
         CreateGroup("Basic Settings", 
             AudioSetting.PresetSelection,
             AudioSetting.SpikeThreshold,
@@ -191,8 +214,9 @@ public class OSCAudioDirectionModule : Module
             AudioSetting.EnableSubBass, AudioSetting.EnableBass, AudioSetting.EnableLowMid, 
             AudioSetting.EnableMid, AudioSetting.EnableUpperMid, AudioSetting.EnablePresence, 
             AudioSetting.EnableBrilliance);
+#endregion
     }
-
+#region moduleStart
     protected override async Task<bool> OnModuleStart()
     {
         try
@@ -208,7 +232,7 @@ public class OSCAudioDirectionModule : Module
 
             _audioProcessor = _audioFactory.CreateProcessor(_config, _deviceManager.AudioCapture!.WaveFormat.BitsPerSample / 8);
             _deviceManager.DataAvailable += OnDataAvailable;
-            
+
             // Reset state
             _currentVolume = 0f;
             _currentDirection = 0.5f;
@@ -218,7 +242,6 @@ public class OSCAudioDirectionModule : Module
 
             // Apply initial configuration
             ApplyConfigurationToProcessor();
-            
             return true;
         }
         catch (Exception ex)
@@ -227,7 +250,8 @@ public class OSCAudioDirectionModule : Module
             return false;
         }
     }
-
+#endregion
+#region moduleStop
     protected override Task OnModuleStop()
     {
         // Unsubscribe from events first
@@ -254,7 +278,7 @@ public class OSCAudioDirectionModule : Module
         
         return Task.CompletedTask;
     }
-
+#endregion
     private void UpdateConfigurationFromSettings()
     {
         lock (_configLock)
@@ -471,5 +495,15 @@ public class OSCAudioDirectionModule : Module
         {
             Log($"Error in update loop: {ex.Message}");
         }
+    }
+
+    public List<string> getAudioSources(){
+        var devices = new List<string>();
+        var deviceEnumerator = new MMDeviceEnumerator();
+        var endpointDevices = deviceEnumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+        foreach(var device in endpointDevices){
+            devices.Add(device.DeviceFriendlyName);
+        }
+        return devices;
     }
 } 
