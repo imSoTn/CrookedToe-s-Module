@@ -42,9 +42,62 @@ namespace CrookedToe.Modules.OSCAudioReaction.UI
                 SuggestionList.ItemsSource = availableAudioSources;
             }
         }
-        private void SuggestionList_MouseLeftButtonUp(object sender, MouseButtonEventArgs e){
-            if (SuggestionList.SelectedItem is string availableAudioSources){
 
+        private void InputBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            string input = InputBox.Text.ToLower();
+
+            // Filter displays based on user input
+            var filteredDisplays = availableAudioSources
+                .Where(display => display.ToLower().Contains(input))
+                .ToList();
+
+            // Show or hide suggestions
+            if (filteredDisplays.Any())
+            {
+                SuggestionList.ItemsSource = availableAudioSources;
+                SuggestionList.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                SuggestionList.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void InputBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Down)
+            {
+                // Focus on the list and select the first item
+                SuggestionList.Focus();
+                SuggestionList.SelectedIndex = 0;
+            }
+        }
+
+        private void SuggestionList_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter && SuggestionList.SelectedItem is string selectedAudioSource)
+            {
+                // Update the TextBox and hide the suggestions
+                InputBox.Text = selectedAudioSource;
+                SuggestionList.Visibility = Visibility.Collapsed;
+                InputBox.Focus();
+            }
+            else if (e.Key == Key.Escape)
+            {
+                // Hide suggestions on Escape key
+                SuggestionList.Visibility = Visibility.Collapsed;
+                InputBox.Focus();
+            }
+        }
+
+        private void SuggestionList_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (SuggestionList.SelectedItem is string selectedAudioSource)
+            {
+                // Update the TextBox and hide the suggestions
+                InputBox.Text = selectedAudioSource;
+                SuggestionList.Visibility = Visibility.Collapsed;
             }
         }
     }

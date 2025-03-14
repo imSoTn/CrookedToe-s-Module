@@ -7,11 +7,20 @@
              d:DesignHeight="200"
              d:DesignWidth="300">
     <Grid>
+        <TextBox x:Name="InputBox"
+                 Text="{Binding Attribute.Value, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 VerticalAlignment="Top"
+                 HorizontalAlignment="Stretch"
+                 TextChanged="InputBox_TextChanged"
+                 KeyDown="InputBox_KeyDown" />
+
+        <!-- ListBox for autocomplete suggestions -->
         <ListBox x:Name="SuggestionList"
                  VerticalAlignment="Top"
                  Margin="0,30,0,0"
-                 Visibility="Visible"
-                 MouseLeftButtonUp="SuggestionList_MouseLeftButtonUp">
+                 Visibility="Collapsed"
+                 MouseLeftButtonUp="SuggestionList_MouseLeftButtonUp"
+                 KeyDown="SuggestionList_KeyDown">
             <ListBox.Style>
                 <Style TargetType="ListBox">
                     <Setter Property="Background"

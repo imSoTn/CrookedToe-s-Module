@@ -10,7 +10,7 @@ using VRCOSC.App.SDK.Parameters;
 using VRCOSC.App.SDK.VRChat;
 using CrookedToe.Modules.OSCAudioReaction.AudioProcessing;
 using CrookedToe.Modules.OSCAudioReaction.UI;
-using Xceed.Wpf.Toolkit.PropertyGrid.Attributes;
+using System.Threading.Tasks;
 
 namespace CrookedToe.Modules.OSCAudioReaction;
 
@@ -32,8 +32,6 @@ public class OSCAudioDirectionModule : Module
     private float _currentVolume;
     private float _currentDirection;
     private volatile bool _configurationChanged;
-    private string SelectedAudioSource;
-    private List<string> avalableDevices;
     private enum AudioParameter 
     { 
         AudioDirection, 
@@ -51,7 +49,6 @@ public class OSCAudioDirectionModule : Module
 
     private enum AudioSetting 
     { 
-        DeviceID,
         Gain, 
         EnableAGC, 
         Smoothing, 
@@ -215,6 +212,7 @@ public class OSCAudioDirectionModule : Module
             AudioSetting.EnableMid, AudioSetting.EnableUpperMid, AudioSetting.EnablePresence, 
             AudioSetting.EnableBrilliance);
 #endregion
+        testInitilizeForSettings();
     }
 #region moduleStart
     protected override async Task<bool> OnModuleStart()
@@ -223,8 +221,9 @@ public class OSCAudioDirectionModule : Module
         {
             UpdateConfigurationFromSettings();
             _deviceManager = _audioFactory.CreateDeviceManager(_config, this);
-            
-            if (!await _deviceManager.InitializeDefaultDeviceAsync())
+
+            debugDeviseById(GetSelectedDevice());
+            if (!await _deviceManager.InitializeDeviceAsync(GetSelectedDevice()))
             {
                 Log("Failed to initialize audio device");
                 return false;
@@ -340,7 +339,8 @@ public class OSCAudioDirectionModule : Module
                     SpikeThreshold = GetSettingValue<float>(AudioSetting.SpikeThreshold),
                     FftSize = _config.FftSize,
                     UpdateIntervalMs = _config.UpdateIntervalMs,
-                    PreferredDeviceId = _config.PreferredDeviceId,
+                    // PreferredDeviceId = _config.PreferredDeviceId,
+                    PreferredDeviceId = "{0.0.0.00000000}. {ed433385-2278-4271-8f89-a412de1612bc}",
                     FrequencyBands = _config.FrequencyBands
                 }
             };
@@ -497,13 +497,37 @@ public class OSCAudioDirectionModule : Module
         }
     }
 
+    private void testInitilizeForSettings(){
+        UpdateConfigurationFromSettings();
+        _deviceManager = _audioFactory.CreateDeviceManager(_config, this);
+    }
+
     public List<string> getAudioSources(){
         var devices = new List<string>();
-        var deviceEnumerator = new MMDeviceEnumerator();
-        var endpointDevices = deviceEnumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+        // var deviceEnumerator = new MMDeviceEnumerator();
+        // var endpointDevices = deviceEnumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+        var endpointDevices = _deviceManager.GetAvailableDevices();
         foreach(var device in endpointDevices){
             devices.Add(device.DeviceFriendlyName);
         }
         return devices;
+    }
+
+    private string GetSelectedDevice(){
+        var selectedDeviceName = GetSettingValue<string>(CrookedToeSettings.SelectedAudioSource);
+        var devices = _deviceManager.GetAvailableDevices();
+        foreach (var device in devices){
+            if (device.DeviceFriendlyName == selectedDeviceName){
+                return device.ID;
+            }
+        }
+        return null;
+    }
+    private void debugDeviseById(string deviceId) {
+        var deviceEnumerator = new MMDeviceEnumerator();
+        MMDevice device = deviceEnumerator.GetDevice(deviceId);
+        Log($"Device name: {device.DeviceFriendlyName}");
+        Log($"Device id: {device.ID}");
+        Log($"MixFormat: {device.AudioClient.MixFormat}");
     }
 } 
